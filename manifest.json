@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "NCCU 論著助手",
+  "version": "0.1.0",
+  "description": "自動將書目資料填入政大論著目錄系統",
+
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "tabs",
+    "alarms",
+    "notifications"
+  ],
+
+  "host_permissions": [
+    "https://*.nccu.edu.tw/*",
+    "https://api.openai.com/*",
+    "https://www.myai168.com/*",
+    "https://api.crossref.org/*",
+    "https://api.openalex.org/*",
+    "https://pub.orcid.org/*",
+    "https://eutils.ncbi.nlm.nih.gov/*",
+    "https://api.semanticscholar.org/*",
+    "https://export.arxiv.org/*",
+    "https://api.datacite.org/*",
+    "https://api.unpaywall.org/*",
+    "https://www.googleapis.com/*",
+    "https://openlibrary.org/*",
+    "https://*.lib.nccu.edu.tw/*",
+    "https://doi.org/*",
+    "https://dblp.org/*",
+    "https://www.airitilibrary.com/*",
+    "http://data-doi.airiti.com/*",
+    "https://*/*"
+  ],
+
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "NCCU 論著助手"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://webapp.nccu.edu.tw/PR/PR02/PR0201/*",
+        "https://webapp1.nccu.edu.tw/*"
+      ],
+      "js": ["content_script.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

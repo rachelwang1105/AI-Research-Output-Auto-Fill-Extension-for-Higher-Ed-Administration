@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>論著助手</title>
+  <style>
+    /* ── Design tokens ─────────────────────────────────────── */
+    :root {
+      --ink:        #1a1c2e;
+      --ink2:       #2a2d44;
+      --gold:       #b8861a;
+      --gold-lt:    #f5e8c7;
+      --bg:         #f7f5f0;
+      --surface:    #ffffff;
+      --border:     #dedad2;
+      --text:       #23211e;
+      --muted:      #7a7670;
+      --green:      #1e6b3a;
+      --green-lt:   #e5f5ec;
+      --red:        #b83030;
+      --red-lt:     #fdf0f0;
+      --red-border: #f0c0c0;
+      --amber:      #9a6000;
+      --amber-lt:   #fff4dc;
+      --amber-bd:   #e8c870;
+      --radius:     6px;
+      --shadow-sm:  0 1px 3px rgba(26,28,46,0.07), 0 0 0 1px rgba(26,28,46,0.05);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink:        #252846;
+        --ink2:       #303560;
+        --gold:       #d4a840;
+        --gold-lt:    #2a2008;
+        --bg:         #15141b;
+        --surface:    #1d1c26;
+        --border:     #2c2b38;
+        --text:       #e8e4dc;
+        --muted:      #807888;
+        --green:      #28885a;
+        --green-lt:   #0c1f14;
+        --red:        #c04040;
+        --red-lt:     #1f0e0e;
+        --red-border: #50202a;
+        --amber:      #c09030;
+        --amber-lt:   #1e1608;
+        --amber-bd:   #60440a;
+        --shadow-sm:  0 1px 3px rgba(0,0,0,0.3), 0 0 0 1px rgba(0,0,0,0.2);
+      }
+    }
+    :root[data-theme="light"] {
+      --ink:        #1a1c2e;
+      --ink2:       #2a2d44;
+      --gold:       #b8861a;
+      --gold-lt:    #f5e8c7;
+      --bg:         #f7f5f0;
+      --surface:    #ffffff;
+      --border:     #dedad2;
+      --text:       #23211e;
+      --muted:      #7a7670;
+      --green:      #1e6b3a;
+      --green-lt:   #e5f5ec;
+      --red:        #b83030;
+      --red-lt:     #fdf0f0;
+      --red-border: #f0c0c0;
+      --amber:      #9a6000;
+      --amber-lt:   #fff4dc;
+      --amber-bd:   #e8c870;
+      --shadow-sm:  0 1px 3px rgba(26,28,46,0.07), 0 0 0 1px rgba(26,28,46,0.05);
+    }
+    :root[data-theme="dark"] {
+      --ink:        #252846;
+      --ink2:       #303560;
+      --gold:       #d4a840;
+      --gold-lt:    #2a2008;
+      --bg:         #15141b;
+      --surface:    #1d1c26;
+      --border:     #2c2b38;
+      --text:       #e8e4dc;
+      --muted:      #807888;
+      --green:      #28885a;
+      --green-lt:   #0c1f14;
+      --red:        #c04040;
+      --red-lt:     #1f0e0e;
+      --red-border: #50202a;
+      --amber:      #c09030;
+      --amber-lt:   #1e1608;
+      --amber-bd:   #60440a;
+      --shadow-sm:  0 1px 3px rgba(0,0,0,0.3), 0 0 0 1px rgba(0,0,0,0.2);
+    }
+
+    /* ── Reset ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 340px;
+      font-family: "Noto Sans TC", "Microsoft JhengHei UI", "Microsoft JhengHei",
+                   "PingFang TC", system-ui, sans-serif;
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    .header {
+      background: var(--ink);
+      background-image:
+        repeating-linear-gradient(
+          135deg,
+          transparent 0px, transparent 10px,
+          rgba(255,255,255,0.018) 10px, rgba(255,255,255,0.018) 11px
+        );
+      color: #f0ede6;
+      padding: 13px 15px 11px;
+      position: relative;
+    }
+    .header::after {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--gold) 0%, transparent 65%);
+    }
+    .header-logotype {
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #f0ede6;
+      line-height: 1;
+    }
+    .header-logotype em {
+      font-style: normal;
+      color: var(--gold);
+    }
+    .header-sub {
+      font-size: 10px;
+      color: rgba(240,237,230,0.45);
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+
+    /* ── Page status ────────────────────────────────────────── */
+    .page-status {
+      padding: 6px 14px;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .page-status.ok   { color: var(--green); }
+    .page-status.warn { color: var(--amber); }
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+
+    #pageMetaAction {
+      padding: 6px 14px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--green-lt);
+    }
+
+    /* ── Progress steps ─────────────────────────────────────── */
+    .progress-steps {
+      display: flex;
+      align-items: flex-start;
+      padding: 11px 14px 9px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      flex: 1;
+      position: relative;
+    }
+    .step:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      top: 8px;
+      left: calc(50% + 10px);
+      width: calc(100% - 20px);
+      height: 2px;
+      background: var(--border);
+      transition: background 0.4s;
+    }
+    .step.done:not(:last-child)::after { background: var(--green); }
+
+    .step-dot {
+      width: 17px; height: 17px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 8px;
+      font-weight: 800;
+      color: var(--muted);
+      z-index: 1;
+      transition: all 0.3s;
+    }
+    .step.done   .step-dot {
+      border-color: var(--green);
+      background: var(--green);
+      color: white;
+    }
+    .step.active .step-dot {
+      border-color: var(--gold);
+      background: var(--gold);
+      color: white;
+      animation: pulse-dot 1.8s ease-in-out infinite;
+    }
+    .step.error  .step-dot {
+      border-color: var(--red);
+      background: var(--red);
+      color: white;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { box-shadow: 0 0 0 0   rgba(184,134,26,0.5); }
+      50%       { box-shadow: 0 0 0 5px rgba(184,134,26,0);   }
+    }
+
+    .step-label {
+      font-size: 9px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .step.done   .step-label { color: var(--green); }
+    .step.active .step-label { color: var(--gold); font-weight: 700; }
+
+    /* ── Section scaffold ───────────────────────────────────── */
+    .section {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-label {
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      padding-left: 8px;
+      border-left: 2px solid var(--gold);
+      margin-bottom: 10px;
+      line-height: 1.2;
+    }
+
+    /* ── Inputs ─────────────────────────────────────────────── */
+    input[type="text"],
+    input[type="password"],
+    textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      font-family: inherit;
+    }
+    input[type="text"]:focus,
+    input[type="password"]:focus,
+    textarea:focus {
+      border-color: var(--gold);
+      box-shadow: 0 0 0 3px rgba(184,134,26,0.13);
+    }
+    #doiInput {
+      font-family: "Courier New", "Consolas", monospace;
+      letter-spacing: 0.01em;
+    }
+    .input-hint {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 5px;
+      line-height: 1.45;
+    }
+    textarea#textInput {
+      resize: vertical;
+      min-height: 88px;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    /* ── Tabs ───────────────────────────────────────────────── */
+    .input-tabs {
+      display: flex;
+      border-bottom: 2px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .input-tab {
+      flex: 1;
+      padding: 6px 4px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      position: relative;
+      transition: color 0.15s;
+      letter-spacing: 0.01em;
+    }
+    .input-tab::after {
+      content: '';
+      position: absolute;
+      bottom: -2px; left: 18%; right: 18%;
+      height: 2px;
+      background: var(--gold);
+      transform: scaleX(0);
+      transition: transform 0.2s cubic-bezier(0.4,0,0.2,1);
+    }
+    .input-tab.active          { color: var(--ink); }
+    .input-tab.active::after   { transform: scaleX(1); }
+    .input-tab:hover:not(.active) { color: var(--text); }
+
+    .tab-badge {
+      display: inline-block;
+      background: var(--red);
+      color: white;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 0 4px;
+      border-radius: 8px;
+      min-width: 14px;
+      height: 14px;
+      line-height: 14px;
+      text-align: center;
+      margin-left: 3px;
+      vertical-align: middle;
+    }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn-primary {
+      width: 100%;
+      padding: 9px 14px;
+      background: var(--ink);
+      color: #f0ede6;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      margin-top: 10px;
+      letter-spacing: 0.02em;
+    }
+    .btn-primary:hover    { background: var(--ink2); }
+    .btn-primary:active   { transform: scale(0.985); }
+    .btn-primary:disabled {
+      background: var(--border);
+      color: var(--muted);
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-danger {
+      width: 100%;
+      padding: 8px 14px;
+      background: transparent;
+      color: var(--red);
+      border: 1px solid var(--red-border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-top: 8px;
+    }
+    .btn-danger:hover { background: var(--red-lt); }
+
+    .btn-link {
+      width: 100%;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 11px;
+      cursor: pointer;
+      padding: 6px 0 2px;
+      text-align: center;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .btn-link:hover { color: var(--gold); }
+
+    .btn-sm {
+      padding: 7px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 11px;
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color 0.15s, background 0.15s;
+      font-family: inherit;
+    }
+    .btn-sm:hover { background: var(--surface); border-color: var(--gold); }
+
+    /* ── Key row ─────────────────────────────────────────────── */
+    .key-row { display: flex; gap: 6px; }
+    .key-row input { flex: 1; }
+
+    /* ── Loading ─────────────────────────────────────────────── */
+    .loading-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 0 10px;
+    }
+    .loading-dots { display: flex; gap: 6px; }
+    .loading-dots span {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--gold);
+      animation: dot-pulse 1.2s ease-in-out infinite;
+    }
+    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dot-pulse {
+      0%, 80%, 100% { transform: scale(0.55); opacity: 0.35; }
+      40%            { transform: scale(1);    opacity: 1;    }
+    }
+
+    /* ── Confirm paper ───────────────────────────────────────── */
+    .confirm-paper {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.55;
+      box-shadow: var(--shadow-sm);
+    }
+    .confirm-title { font-weight: 700; color: var(--text); margin-bottom: 3px; }
+    .confirm-meta  { color: var(--muted); font-size: 11px; }
+    .confirm-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 3px;
+      margin-top: 5px;
+      margin-right: 4px;
+    }
+    .badge-ok   { background: var(--green-lt); color: var(--green); }
+    .badge-warn { background: var(--amber-lt); color: var(--amber); }
+
+    /* ── Preview ─────────────────────────────────────────────── */
+    .preview-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+    .preview-row {
+      display: flex;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--border);
+      gap: 8px;
+      align-items: baseline;
+    }
+    .preview-row:last-child { border-bottom: none; }
+    .preview-key {
+      font-size: 10px;
+      color: var(--muted);
+      min-width: 52px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .preview-val {
+      font-size: 11px;
+      color: var(--text);
+      word-break: break-all;
+    }
+    .preview-val.code { font-family: "Courier New", monospace; color: var(--gold); }
+    .preview-val.warn { color: var(--amber); }
+
+    /* ── Error ───────────────────────────────────────────────── */
+    .error-box {
+      background: var(--red-lt);
+      border: 1px solid var(--red-border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      font-size: 11px;
+      color: var(--red);
+      line-height: 1.5;
+    }
+
+    /* ── ORCID block ─────────────────────────────────────────── */
+    .orcid-block {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+      margin-bottom: 10px;
+    }
+    .or-divider {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      color: var(--muted);
+      margin: 8px 0 7px;
+    }
+    .or-divider::before, .or-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .status-hint {
+      font-size: 10px;
+      color: var(--muted);
+      min-height: 15px;
+      margin-top: 5px;
+    }
+
+    /* ── Work cards ──────────────────────────────────────────── */
+    .new-work-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      background: var(--surface);
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .new-work-card:hover {
+      border-color: var(--gold);
+      box-shadow: var(--shadow-sm);
+    }
+    .new-work-card:last-child { margin-bottom: 0; }
+    .work-check {
+      margin-top: 2px;
+      flex-shrink: 0;
+      accent-color: var(--gold);
+      cursor: pointer;
+      width: 14px; height: 14px;
+    }
+    .work-card-content { flex: 1; min-width: 0; }
+    .new-work-title { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+    .new-work-meta  { font-size: 10px; color: var(--muted); }
+    .ah-badge {
+      display: inline-block; margin-left: 5px;
+      font-size: 9px; font-weight: 500; color: #b83030;
+      background: #fdecea; border: 1px solid #f5c6c6;
+      border-radius: 3px; padding: 0 4px; vertical-align: middle;
+      white-space: nowrap;
+    }
+    .ah-summary {
+      font-size: 10px; color: var(--muted);
+      padding: 4px 6px 8px; line-height: 1.5;
+    }
+    .ah-summary-filed { color: #b83030; font-weight: 600; }
+
+    /* ── Queue ───────────────────────────────────────────────── */
+    .queue-info {
+      font-size: 10px;
+      color: var(--amber);
+      background: var(--amber-lt);
+      border: 1px solid var(--amber-bd);
+      border-radius: var(--radius);
+      padding: 7px 9px;
+      margin-top: 6px;
+    }
+    .queue-header { font-weight: 700; margin-bottom: 4px; }
+    .queue-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 0;
+      border-top: 1px solid var(--border);
+    }
+    .queue-num { font-size: 10px; color: var(--muted); min-width: 14px; text-align: center; flex-shrink: 0; }
+    .queue-item-content { flex: 1; min-width: 0; }
+    .queue-item-title {
+      font-size: 10px; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .queue-item-meta { font-size: 9px; color: var(--muted); }
+    .queue-remove {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 13px; padding: 0 2px; flex-shrink: 0;
+    }
+    .queue-remove:hover { color: var(--red); }
+
+    /* ── Pagination ──────────────────────────────────────────── */
+    .pagination-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    /* ── Debug ───────────────────────────────────────────────── */
+    #debugSection { margin: 8px; font-size: 11px; }
+    #debugSection summary { cursor: pointer; color: var(--muted); }
+    #debugOutput {
+      max-height: 300px;
+      overflow: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 6px;
+      margin: 4px 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+      font-size: 10px;
+      color: var(--text);
+    }
+
+    /* ── Utility ─────────────────────────────────────────────── */
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-logotype">論著<em>助手</em></div>
+    <div class="header-sub">NCCU Publication Assistant</div>
+  </div>
+
+  <!-- 頁面偵測 -->
+  <div class="page-status" id="pageStatus">
+    <div class="dot"></div>
+    <span id="pageStatusText">偵測頁面中…</span>
+  </div>
+  <div id="pageMetaAction" class="hidden">
+    <button class="btn-primary" id="btnAddPageMeta"
+            style="margin-top:0; padding:7px; font-size:12px;">加入此頁面書目到佇列</button>
+  </div>
+
+  <!-- 進度步驟 -->
+  <div class="progress-steps" id="progressSteps">
+    <div class="step" id="step1">
+      <div class="step-dot">1</div>
+      <div class="step-label">擷取</div>
+    </div>
+    <div class="step" id="step2">
+      <div class="step-dot">2</div>
+      <div class="step-label">AI 清洗</div>
+    </div>
+    <div class="step" id="step3">
+      <div class="step-dot">3</div>
+      <div class="step-label">填入</div>
+    </div>
+    <div class="step" id="step4">
+      <div class="step-dot">4</div>
+      <div class="step-label">確認</div>
+    </div>
+  </div>
+
+  <!-- 輸入區 -->
+  <div class="section" id="sectionInput">
+    <div class="input-tabs">
+      <button class="input-tab active" id="tabDoi">DOI / 網址</button>
+      <button class="input-tab" id="tabText">文字 / 檔案</button>
+      <button class="input-tab" id="tabQueue">著作佇列<span id="queueTabBadge" class="tab-badge hidden"></span></button>
+    </div>
+
+    <div id="modeDoiContainer">
+      <input type="text" id="doiInput" placeholder="DOI / PMID / arXiv / ISBN" />
+      <div class="input-hint">DOI（10.xxx/xxx）・PMID:12345678・arXiv ID（2301.00001）・ISBN 或完整網址；查詢後加入佇列</div>
+    </div>
+
+    <div id="modeTextContainer" class="hidden">
+      <textarea id="textInput" placeholder="貼上 APA、BibTeX、RIS 或任意引用格式…"></textarea>
+      <div class="input-hint">貼上後加入待處理佇列；AI 解析在處理時才執行，不立即消耗</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+        <span style="font-size:10px;color:var(--muted);flex-shrink:0;">或</span>
+        <button class="btn-sm" id="btnImportFile" style="flex:1;text-align:center;">匯入 RIS / BibTeX / ENW 檔案</button>
+        <input type="file" id="fileImport" accept=".ris,.bib,.enw,.txt" class="hidden">
+      </div>
+    </div>
+
+    <!-- 著作佇列 tab -->
+    <div id="modeQueueContainer" class="hidden">
+
+      <!-- ORCID 追蹤設定 -->
+      <div class="orcid-block">
+        <div class="section-label">ORCID 追蹤設定</div>
+        <button class="btn-primary" id="btnAutoDetect" style="margin-top:0; font-size:12px;">
+          從政大系統自動帶入員編與 ORCID
+        </button>
+        <div id="empStatus" class="status-hint"></div>
+
+        <div class="or-divider">或手動設定</div>
+
+        <div class="key-row" style="margin-bottom:6px;">
+          <input type="text" id="empInput" placeholder="員工編號（如 103666）" maxlength="10"
+            style="font-family:inherit; font-variant-numeric:tabular-nums;" />
+          <button class="btn-sm" id="btnLookupOrcid">查 ORCID</button>
+        </div>
+        <div class="key-row">
+          <input type="text" id="orcidInput" placeholder="0000-0001-2345-6789"
+            style="font-family:'Courier New',monospace;" />
+          <button class="btn-sm" id="btnSaveOrcid">儲存</button>
+        </div>
+        <div id="orcidStatus" class="status-hint">尚未設定</div>
+        <button class="btn-sm" id="btnCheckOrcid"
+          style="margin-top:6px; width:100%; text-align:center;">立即檢查著作</button>
+      </div>
+
+      <!-- 新偵測著作暫存區 -->
+      <div class="section-label" style="margin-bottom:6px;">新偵測著作（暫存區）</div>
+      <div id="newWorksList"></div>
+      <div id="queuePagination" class="pagination-row hidden">
+        <button class="btn-sm" id="btnQueuePrev">‹ 前頁</button>
+        <span id="queuePageInfo" style="font-size:10px; color:var(--muted); flex:1; text-align:center;"></span>
+        <button class="btn-sm" id="btnQueueNext">後頁 ›</button>
+      </div>
+      <div id="worksActions" style="display:none; gap:6px; margin-top:8px; align-items:center;">
+        <button class="btn-sm" id="btnSelectAll">全選未建檔</button>
+        <button class="btn-sm" id="btnSelectNone">全不選</button>
+        <button class="btn-primary" id="btnImportSelected"
+          style="margin-top:0; flex:1; padding:8px;">匯入選取論著</button>
+      </div>
+    </div>
+
+    <button class="btn-primary" id="btnProcess">加入佇列</button>
+  </div>
+
+  <!-- 論文確認區 -->
+  <div class="section hidden" id="sectionConfirm">
+    <div class="section-label">確認論文資訊</div>
+    <div class="confirm-paper" id="confirmBox"></div>
+    <div class="input-hint" style="margin-top:6px;">確認後才會呼叫 AI 進行欄位對應</div>
+    <button class="btn-primary" id="btnConfirm">確認，AI 欄位對應並填入</button>
+    <button class="btn-link" id="btnConfirmCancel">重新輸入</button>
+  </div>
+
+  <!-- 處理中 -->
+  <div class="section hidden" id="sectionLoading">
+    <div class="loading-wrap">
+      <div class="loading-dots">
+        <span></span><span></span><span></span>
+      </div>
+      <div id="loadingText" style="font-size:12px; color:var(--muted); text-align:center;">
+        正在查詢 CrossRef…
+      </div>
+    </div>
+  </div>
+
+  <!-- 錯誤區 -->
+  <div class="section hidden" id="sectionError">
+    <div class="error-box" id="errorMsg"></div>
+    <button class="btn-danger" id="btnRetry">重新輸入</button>
+  </div>
+
+  <!-- 結果預覽區 -->
+  <div class="section hidden" id="sectionPreview">
+    <div class="section-label">AI 解析結果</div>
+    <div class="preview-box" id="previewBox"></div>
+    <button class="btn-primary" id="btnFill">填入表單</button>
+    <button class="btn-primary hidden" id="btnNextQueue"
+      style="background:var(--green); margin-top:6px;">繼續處理下一篇</button>
+    <button class="btn-danger" id="btnCancel">取消，清除所有填入</button>
+    <button class="btn-link" id="btnNewDoi">換一篇論文</button>
+  </div>
+
+  <!-- 待處理佇列 -->
+  <div class="section hidden" id="sectionPendingQueue">
+    <div class="section-label">待處理佇列</div>
+    <div id="pendingQueueList"></div>
+    <button class="btn-primary" id="btnStartQueue" style="margin-top:10px;">開始處理第一篇</button>
+  </div>
+
+  <!-- Debug -->
+  <details id="debugSection" style="display:none;">
+    <summary>▶ AI 回傳 JSON（除錯）</summary>
+    <pre id="debugOutput"></pre>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>
