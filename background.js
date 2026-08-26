@@ -17,8 +17,9 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
   ③ Type 欄含 journal article/journalArticle/article → 03（不論是否有卷期頁碼，online-first 也填 03）
   ④ Type 欄含 book chapter/bookPart/專書篇章 → 02
   ⑤ Type 欄含 book/專書，且無會議關鍵字 → 01
-  ⑥ 無明確 Type，但 Journal/Source 有 ISSN 或看起來像期刊 → 03
-  ⑦ 無法判斷 → 03（最常見）
+  ⑥ Type 欄含 multimedia/展演/performance/演出/音樂會/藝術創作 → 06
+  ⑦ 無明確 Type，但 Journal/Source 有 ISSN 或看起來像期刊 → 03
+  ⑧ 無法判斷 → 10（其他）
 - field_cod: 論著領域，選最符合的一個值。**判斷原則：以論文的主要方法論/學科為準，而非資料來源或研究議題。** 判斷重點：
   • EA=資訊工程：NLP、機器學習、深度學習、電腦視覺、影像辨識、遙測影像處理、資料探勘、社會網路分析、演算法、系統設計、網路安全、對抗式學習（adversarial learning）、deepfake 偵測、生成模型（GAN/diffusion）——即使題目或資料涉及社會議題（假訊息、仇恨言論、政治、醫療等），只要主要方法是電腦科學技術，就填 EA，**不可填 0H**；輸入中若有 research-topic 含 "Computing"/"Machine Learning"/"Image"/"Detection"/"Network"/"Algorithm"/"Adversarial" 等，必須填 EA
   • HE=政治學：以政治學理論/政治現象為主體，不可因論文「使用政治資料」就填；若論文只是用政治資料來驗證技術方法，不填 HE
@@ -43,7 +44,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
   **【Department 欄位】若輸入有 "Department: XXX" 欄位（來自機構典藏的系所資訊），且該作者無自己的 orcid-dept 或 affiliation，則將 Department 值套用為該作者的 sta_ut_nam（適用於所有無個人系所資訊的作者）**
   **【純文字輸入嚴格警告】若輸入格式為純文字（含 "Authors: A; B" 或 "作者：A；B" 的文字行，而非含有 "author":[...] 的 JSON），Authors 行中的逗號是西方姓名「姓, 名」分隔符（如 "Wang, Wen-Hung" = 姓 Wang、名 Wen-Hung），絕對不是「姓名, 系所」格式。此情況下若有 Department: 欄位則依上方規則套用，若無則所有作者的 sta_ut_nam 均必須填空字串 ""，禁止把姓名的任何部分（包含姓氏、名字、拼音）填入 sta_ut_nam**
   **【作者計數規則】Authors 行中以分號（;）分隔的每個名字，無論外觀是否相似或疑似同一人的不同語言名字（如中文名＋原住民族名、中文名＋英文名），一律各自建立一個獨立的作者物件。有幾個分號分隔的名字，authors 陣列就有幾個物件，auth_cnt 也對應填入該數字。**
-- trsnat: 跨國合作："0"=否, "1"=是(含大陸港澳以外國外機構), "2"=是(僅大陸港澳)
+- trsnat: 跨國合作。判斷順序：①若輸入有 _author_countries 欄位，依其國碼陣列判斷：全為 "TW" → "0"；含 "CN"/"HK"/"MO" 且無其他非 TW 國碼 → "2"；含任一非 TW 且非 CN/HK/MO 的國碼 → "1"；含 CN/HK/MO 又含其他非 TW 國碼 → "1"。②若無 _author_countries，從各作者 affiliation 文字推斷所屬國家後套用同樣規則。③完全無資訊時填 "0"
 - kw1~kw5: 關鍵字，最多5個，不足補空字串
 - chk_tag: 審查制度（是否有同儕審查）。**無法從書目資料確定，一律留空字串 ""**，由秘書手動勾選
 - sch_publ_tpe: 學校名義論著，預設 "Y"
@@ -63,10 +64,10 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - citelist: 收錄資料庫陣列，從以下選符合的：0=none（未收錄任何資料庫）, a=AHCI, b=SSCI, c=SCIE, d=EI, e=TSSCI, f=MLA, g=CSA, h=LLBA, i=ACM, j=DBLP, k=IEEE, l=CITESEEN, m=SCI, n=THCI, p=CSSCI, q=THCI Core, r=SCOPUS, x=other。**若輸入中有 _known_dbs 欄位，必須將其所有值原封不動納入 citelist，不可遺漏任何一個**（程式已自動判斷 TSSCI/THCI/THCI Core/SCOPUS/WoS/IEEE/ACM/DBLP 等，代碼已正確對應）。**若輸入中有 _wos_subtype 欄位，表示 WoS 子資料庫已由程式依 OpenAlex 主題領域推導，對應代碼已在 _known_dbs 中，請納入 citelist，並將 _wos_subtype 的值（如「SSCI（主題領域推導，請確認）」）直接寫入 citetpe_rem**。若輸入中有 _wos: true（無 _wos_subtype），表示期刊確認收錄於 WoS 但子資料庫未知，請將 "【需確認 WoS 子資料庫：SSCI/SCIE/AHCI 擇一勾選】" 寫入 citetpe_rem，citelist 中不自行填入 a/b/c。EI 若未出現在 _known_dbs，不確定則不填
 - citetpe_rem: 收錄資料庫其他說明，若無則留空字串
 - nat_tpe: "1"=國內期刊（nat_cod 為 TWN 時），"2"=國外期刊（nat_cod 非 TWN 時）。必須與 nat_cod 一致
-- nat_cod: 期刊出版國 ISO 3碼，例如 TWN=台灣, USA=美國, GBR=英國, DEU=德國, FRA=法國, JPN=日本
+- nat_cod: 期刊出版國 ISO 3碼。判斷順序：①若輸入有 _journal_country 欄位，直接使用該值；②否則從 publisher-location 推斷城市/國家；③否則從 publisher 名稱推斷（Elsevier→NLD, Springer/Nature→GBR, Wiley→USA, IEEE/ACM→USA 等）。常用對照：TWN=台灣, USA=美國, GBR=英國, NLD=荷蘭, DEU=德國, FRA=法國, JPN=日本, CHN=中國, KOR=韓國, SGP=新加坡, AUS=澳洲, CHE=瑞士
 - pertpe_cod: 論文性質："1"=ARTICLE, "2"=REVIEW, "3"=LETTER, "4"=NOTE
-- publ_type: 出版形式："0"=紙本期刊, "1"=電子期刊, "2"=紙本及電子，現代期刊通常填 "2"
-- url_addr: 文章或期刊的網址。優先順序：①若輸入有 _journal_url，直接複製其值；②否則若輸入有 URL 欄位，直接複製該 URL（完整連結，包含路徑，資料庫永久連結、DOI 連結、開放取用頁面均可）；③以上皆無則填空字串 ""
+- publ_type: 出版形式："0"=紙本期刊, "1"=電子期刊, "2"=紙本及電子。判斷方式：若輸入 JSON 有 "issn-type" 欄位，檢查其陣列中是否同時含 type="print" 與 type="electronic" → 填 "2"；只含 type="electronic" → 填 "1"；只含 type="print" → 填 "0"；若無 "issn-type" 欄位或陣列為空 → 預設填 "2"
+- url_addr: 文章或期刊的網址。優先順序：①若輸入有 URL 欄位，直接複製該 URL（完整連結，包含路徑，DOI 連結、資料庫永久連結、開放取用頁面均可）；②否則若輸入有 _journal_url，直接複製其值；③以上皆無則填空字串 ""
 
 書籍專用欄位（publ_tpe 為 01 或 02 時才填，其他類別留空字串）：
 - publ_type: 出版形式："0"=紙本, "1"=電子書, "2"=其他
@@ -437,7 +438,7 @@ function buildFormattedText(f, handle, origin) {
   if (cleanKws.length)    lines.push(`Keywords: ${cleanKws.join('; ')}`);
   if (f.abstract)         lines.push(`Abstract: ${f.abstract.slice(0, 2000)}`);
   if (f.doi)              lines.push(`DOI: ${f.doi}`);
-  lines.push(`Source URL: ${origin}/handle/${handle}`);
+  lines.push(`URL: ${origin}/handle/${handle}`);
   return { formattedText: lines.join('\n'), title: f.title, hasAbstract: !!f.abstract, doi: f.doi || null };
 }
 
@@ -698,7 +699,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const abs = parsed.abstract || abstract;
             if (abs) lines.push(`Abstract: ${abs.slice(0, 2000)}`);
             if (doi) lines.push(`DOI: ${doi}`);
-            lines.push(`Source URL: ${message.url}`);
+            lines.push(`URL: ${message.url}`);
             pageMeta = { title: parsed.title, formattedText: lines.join('\n'), hasAbstract: !!(parsed.abstract || abstract) };
           }
         }
@@ -816,13 +817,19 @@ async function fetchMetadataOnly(doi) {
 
   // CrossRef：保留 DOI 中的 '/'，只對其他特殊字元 encode
   const crossrefUrl = `https://api.crossref.org/works/${cleanDoi.replace(/[^!-~]|\s/g, c => encodeURIComponent(c))}`;
-  const [crossrefRes, openAlexData, s2Data, unpaywallData, inDblp, taiwanJournals] = await Promise.all([
+
+  // OpenAlex 先起動，讓 ORCID 查詢能在 OpenAlex 回傳後立刻並行，不必等 DBLP/S2
+  const _openAlexPromise    = fetchOpenAlexData(cleanDoi);
+  const _orcidDeptsPromise  = _openAlexPromise.then(oaData => fetchOrcidDepts(oaData?.authorships || []));
+
+  const [crossrefRes, openAlexData, s2Data, unpaywallData, inDblp, taiwanJournals, orcidDepts] = await Promise.all([
     fetch(crossrefUrl),
-    fetchOpenAlexData(cleanDoi),
+    _openAlexPromise,
     fetchSemanticScholar(`DOI:${cleanDoi}`),
     fetchUnpaywall(cleanDoi),
     checkDblp(cleanDoi),
-    getTaiwanJournals()
+    getTaiwanJournals(),
+    _orcidDeptsPromise,
   ]);
 
   if (!crossrefRes.ok) {
@@ -990,8 +997,6 @@ async function fetchMetadataOnly(doi) {
     });
     if (work.page === '1-1') delete work.page;  // 封面頁的假頁碼
   }
-
-  const orcidDepts = await fetchOrcidDepts(openAlexData?.authorships || []);
 
   // 主要來源均無摘要時，試從出版商 HTML 頁面抓 meta tag
   const hasAbstractNow = !!(work.abstract || openAlexData?.abstract_inverted_index || s2Data?.abstract);
@@ -1642,7 +1647,7 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
   pick('type', 'title', 'subtitle', 'container-title', 'short-container-title',
        'volume', 'issue', 'page', 'language', 'publisher', 'publisher-location',
        'published-print', 'published-online', 'issued',
-       'ISSN', 'ISBN', 'keyword', 'subject', 'event');
+       'ISSN', 'ISBN', 'issn-type', 'keyword', 'subject', 'event');
 
   // 作者：CrossRef 機構優先，否則從 OpenAlex 補；ORCID dept 另存 orcid-dept 欄位
   if (work.author?.length) {
@@ -1668,7 +1673,14 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
     d.editor = work.editor.map(e => ({ given: e.given || '', family: e.family || '' }));
   }
 
+  // 作者所屬機構國碼（OpenAlex authorships → 供 trsnat 判斷用）
+  const _authorCountries = (openAlex?.authorships || [])
+    .flatMap(a => (a.institutions || []).map(inst => (inst.country_code || '').toUpperCase()))
+    .filter(Boolean);
+  if (_authorCountries.length) d['_author_countries'] = _authorCountries;
+
   d.DOI = doi;
+  if (doi) d['URL'] = `https://doi.org/${doi}`;
 
   // ── 卷/期/頁補強（CrossRef 無時用 OpenAlex biblio 填補）──
   if (!d.volume  && openAlex?.biblio?.volume)      d.volume = openAlex.biblio.volume;
@@ -1700,6 +1712,31 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
   // 期刊首頁網址（供 url_addr 欄位使用）
   const journalUrl = openAlex?.primary_location?.source?.homepage_url || '';
   if (journalUrl) d['_journal_url'] = journalUrl;
+
+  // 期刊出版國（OpenAlex source.country_code → ISO 3碼）
+  const _iso2to3 = {
+    AF:'AFG',AL:'ALB',DZ:'DZA',AD:'AND',AO:'AGO',AR:'ARG',AM:'ARM',AU:'AUS',AT:'AUT',
+    AZ:'AZE',BH:'BHR',BD:'BGD',BY:'BLR',BE:'BEL',BZ:'BLZ',BJ:'BEN',BT:'BTN',BO:'BOL',
+    BA:'BIH',BW:'BWA',BR:'BRA',BN:'BRN',BG:'BGR',BF:'BFA',BI:'BDI',KH:'KHM',CM:'CMR',
+    CA:'CAN',CV:'CPV',CF:'CAF',TD:'TCD',CL:'CHL',CN:'CHN',CO:'COL',CG:'COG',CR:'CRI',
+    HR:'HRV',CU:'CUB',CY:'CYP',CZ:'CZE',DK:'DNK',DJ:'DJI',DO:'DOM',EC:'ECU',EG:'EGY',
+    SV:'SLV',EE:'EST',ET:'ETH',FJ:'FJI',FI:'FIN',FR:'FRA',GA:'GAB',GE:'GEO',DE:'DEU',
+    GH:'GHA',GR:'GRC',GT:'GTM',GN:'GIN',GY:'GUY',HT:'HTI',HN:'HND',HK:'HKG',HU:'HUN',
+    IS:'ISL',IN:'IND',ID:'IDN',IR:'IRN',IQ:'IRQ',IE:'IRL',IL:'ISR',IT:'ITA',JM:'JAM',
+    JP:'JPN',JO:'JOR',KZ:'KAZ',KE:'KEN',KP:'PRK',KR:'KOR',KW:'KWT',KG:'KGZ',LA:'LAO',
+    LV:'LVA',LB:'LBN',LY:'LBY',LI:'LIE',LT:'LTU',LU:'LUX',MK:'MKD',MG:'MDG',MY:'MYS',
+    MV:'MDV',ML:'MLI',MT:'MLT',MR:'MRT',MX:'MEX',MD:'MDA',MC:'MCO',MN:'MNG',ME:'MNE',
+    MA:'MAR',MZ:'MOZ',MM:'MMR',NA:'NAM',NP:'NPL',NL:'NLD',NZ:'NZL',NI:'NIC',NG:'NGA',
+    NO:'NOR',OM:'OMN',PK:'PAK',PA:'PAN',PG:'PNG',PY:'PRY',PE:'PER',PH:'PHL',PL:'POL',
+    PT:'PRT',QA:'QAT',RO:'ROU',RU:'RUS',RW:'RWA',SA:'SAU',SN:'SEN',RS:'SRB',SL:'SLE',
+    SG:'SGP',SK:'SVK',SI:'SVN',SO:'SOM',ZA:'ZAF',SS:'SSD',ES:'ESP',LK:'LKA',SD:'SDN',
+    SR:'SUR',SZ:'SWZ',SE:'SWE',CH:'CHE',SY:'SYR',TW:'TWN',TJ:'TJK',TZ:'TZA',TH:'THA',
+    TL:'TLS',TG:'TGO',TT:'TTO',TN:'TUN',TR:'TUR',TM:'TKM',UG:'UGA',UA:'UKR',AE:'ARE',
+    GB:'GBR',US:'USA',UY:'URY',UZ:'UZB',VE:'VEN',VN:'VNM',YE:'YEM',ZM:'ZMB',ZW:'ZWE',
+  };
+  const _cc2 = (openAlex?.primary_location?.source?.country_code || '').toUpperCase();
+  const _cc3 = _iso2to3[_cc2] || '';
+  if (_cc3) d['_journal_country'] = _cc3;
 
   // ── 開放取用網址──────────────────────────────────────
   const oaUrl = unpaywall?.best_oa_location?.url_for_pdf
@@ -1759,6 +1796,9 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
     }
     if (work.publisher) d['_conf_host'] = work.publisher;
   }
+
+  // DOI 路徑永遠補 URL（供 url_addr 使用）
+  if (doi) d['URL'] = `https://doi.org/${doi}`;
 
   // 空陣列欄位不傳（避免干擾 AI）
   for (const k of Object.keys(d)) {
