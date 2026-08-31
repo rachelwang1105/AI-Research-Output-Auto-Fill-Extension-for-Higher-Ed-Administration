@@ -10,7 +10,8 @@
     "scripting",
     "tabs",
     "alarms",
-    "notifications"
+    "notifications",
+    "sidePanel"
   ],
 
   "host_permissions": [
@@ -45,8 +46,11 @@
     "service_worker": "background.js"
   },
 
+  "side_panel": {
+    "default_path": "popup/popup.html"
+  },
+
   "action": {
-    "default_popup": "popup/popup.html",
     "default_title": "NCCU 論著助手"
   },
 
