@@ -598,6 +598,14 @@
       cursor: pointer; font-size: 13px; padding: 0 2px; flex-shrink: 0;
     }
     .queue-remove:hover { color: var(--red); }
+    .queue-move-group { display: flex; flex-direction: column; gap: 1px; flex-shrink: 0; }
+    .queue-move {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 9px; padding: 0; line-height: 1;
+      display: flex; align-items: center; justify-content: center; width: 14px; height: 13px;
+    }
+    .queue-move:hover { color: var(--gold); }
+    .queue-move[disabled] { opacity: 0; pointer-events: none; }
 
     /* ── Pagination ──────────────────────────────────────────── */
     .pagination-row {

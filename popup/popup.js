@@ -1657,11 +1657,16 @@ async function renderPendingQueue() {
 
   show(sectionPendingQueue);
   btnStartQueue.disabled = false;
+  const total = orcidQueue.length;
   pendingQueueList.innerHTML = orcidQueue.map((w, i) => {
     const label = w.identifierType?.toUpperCase() || (w.doi ? 'DOI' : 'ORCID');
     const title = w.title || w.identifierValue || w.doi || '未知';
     const meta  = [w.year, label].filter(Boolean).join('・');
     return `<div class="queue-item">
+      <div class="queue-move-group">
+        <button class="queue-move" data-index="${i}" data-dir="-1" title="上移" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="queue-move" data-index="${i}" data-dir="1"  title="下移" ${i === total - 1 ? 'disabled' : ''}>▼</button>
+      </div>
       <span class="queue-num">${i + 1}</span>
       <div class="queue-item-content">
         <div class="queue-item-title">${title}</div>
@@ -1671,6 +1676,20 @@ async function renderPendingQueue() {
     </div>`;
   }).join('');
 
+  pendingQueueList.querySelectorAll('.queue-move').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.index);
+      const dir = parseInt(btn.dataset.dir);
+      const { orcidQueue: q = [] } = await chrome.storage.local.get('orcidQueue');
+      const to = idx + dir;
+      if (to < 0 || to >= q.length) return;
+      [q[idx], q[to]] = [q[to], q[idx]];
+      await chrome.storage.local.set({ orcidQueue: q });
+      await renderPendingQueue();
+    });
+  });
+
   pendingQueueList.querySelectorAll('.queue-remove').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1678,7 +1697,7 @@ async function renderPendingQueue() {
       const { orcidQueue: q = [] } = await chrome.storage.local.get('orcidQueue');
       await chrome.storage.local.set({ orcidQueue: q.filter((_, i) => i !== idx) });
       await renderPendingQueue();
-      await checkNewOrcidWorks(); // 更新 tab badge
+      await checkNewOrcidWorks();
     });
   });
 
