@@ -107,6 +107,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - budget: 研究經費金額（數字，新台幣元），若不明則填 "0"
 
 展演專用欄位（publ_tpe 為 06 時才填，其他類別留空字串）：
+**若輸入有 Event: 欄位，格式通常為「活動名稱, 日期」（如「東吳大學劉光義教授紀念專題講座, 2026.05.15」）：逗號前為 conf_nam，逗號後的日期轉換為 conf_dt（2026.05.15 → 2026/05/15-2026/05/15；若有區間則對應起迄）**
 - conf_nam: 展演名稱
 - conf_dt: 展演起迄時間，格式為 "YYYY/MM/DD-YYYY/MM/DD"，如 "2024/03/01-2024/03/31"，若無則留空字串
 - nat_cod: 舉辦國家 ISO 3碼，例如 TWN=台灣, USA=美國
@@ -131,6 +132,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - ram_memo: 備注說明，若無則留空字串
 
 學術交流專用欄位（publ_tpe 為 12 時才填，其他類別留空字串）：
+**若輸入有 Event: 欄位，格式通常為「活動名稱, 日期」：逗號前為 conf_nam，逗號後的日期轉換為 conf_dt（2026.05.15 → 2026/05/15-2026/05/15）**
 - conf_tpe: 學術交流種類："1"=演講（境內外學校或機構舉辦，短期3個月內學術專題演講，不含校內自辦）, "2"=研習活動（境內外學校或機構舉辦，短期3個月內學術研習，不含校內自辦）, "3"=講學（非屬演講或研習之境內外教育交流活動，不含校內自辦）
 - conf_nam: 活動名稱
 - conf_dt: 活動起迄時間，格式為 "YYYY/MM/DD-YYYY/MM/DD"，如 "2024/03/01-2024/03/02"，若無則留空字串
@@ -144,15 +146,28 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('orcidCheck', { periodInMinutes: 1440 });
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   const alarm = await chrome.alarms.get('orcidCheck');
   if (!alarm) chrome.alarms.create('orcidCheck', { periodInMinutes: 1440 });
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'orcidCheck') checkOrcidWorks();
+});
+
+// ── 分頁切換：通知 side panel 更新頁面偵測狀態 ──────────────
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.runtime.sendMessage({ type: 'TAB_CHANGED', tabId }).catch(() => {});
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.active) {
+    chrome.runtime.sendMessage({ type: 'TAB_CHANGED', tabId }).catch(() => {});
+  }
 });
 
 chrome.notifications.onClicked.addListener(() => {
@@ -648,21 +663,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'testBatch') {
     (async () => {
       const dois = [].concat(message.dois || []);
-      console.log(`[testBatch] 開始測試 ${dois.length} 個 DOI`);
       const results = [];
       for (const doi of dois) {
         try {
           const r = await fetchMetadataOnly(doi);
           const preview = { doi, title: r.title, journal: r.journal, year: r.year, authorCount: r.authorCount, hasAbstract: r.hasAbstract };
-          console.log('[testBatch] ✓', JSON.stringify(preview));
-          console.log('[testBatch] formattedText →\n', r.formattedText);
           results.push({ doi, ok: true, ...preview });
         } catch (e) {
-          console.warn('[testBatch] ✗', doi, e.message);
           results.push({ doi, ok: false, error: e.message });
         }
       }
-      console.log('[testBatch] 完成');
       sendResponse({ results });
     })();
     return true;
@@ -723,17 +733,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let _preAuthors = null;
         if (_preAuthMatch) { try { _preAuthors = JSON.parse(_preAuthMatch[1]); } catch {} }
         const _preDept  = _preDeptMatch?.[1]?.trim() || '';
-        console.log('[論著助手] processWithAI preAuthors=', JSON.stringify(_preAuthors), 'preDept=', _preDept);
         const cleanRaw  = raw.replace(/^_pre_(?:authors_json|dept): .+$/gm, '').trim();
         // 純文字（非 JSON）來自文字模式貼上 → 先補查 TSSCI/THCI/Scopus 再送 AI
         const text = cleanRaw.trimStart()[0] !== '{' ? await enrichPublicationText(cleanRaw) : cleanRaw;
         const result = await callOpenAI(text);
-        console.log('[論著助手] AI result.authors=', JSON.stringify(result.authors));
         // 有 DOM 作者清單時直接覆蓋 AI 判斷
         if (_preAuthors?.length > 0) {
           result.authors  = _preAuthors.map(a => ({ sta_chi: a.sta_chi, sta_ut_nam: _preDept, ca_sts: '0' }));
           result.auth_cnt = _preAuthors.length;
-          console.log('[論著助手] 以 DOM 作者清單覆蓋 AI 結果:', JSON.stringify(result.authors));
         }
         sendResponse({ success: true, data: result });
       } catch (err) {
@@ -989,7 +996,6 @@ async function fetchMetadataOnly(doi) {
   // 無作者 + 標題含封面關鍵字時，用 Semantic Scholar 覆蓋 title 與 authors
   const FRONT_MATTER_RE = /^(title page|front matter|table of contents|preface|index|cover|copyright|foreword|acknowledgment)/i;
   if (!work.author?.length && FRONT_MATTER_RE.test(work.title?.[0] || '') && s2Data?.title && s2Data?.authors?.length) {
-    console.log('[fetchMetadataOnly] CrossRef 封面頁，改用 S2：', s2Data.title);
     work.title = [s2Data.title];
     work.author = s2Data.authors.map(a => {
       const parts = a.name.trim().split(/\s+/);
@@ -1048,7 +1054,6 @@ async function fetchJournalUrlFromOpenAlex(journalName) {
 
 async function callOpenAI(text) {
   const apiKey = _AK;
-  console.group('[論著助手] AI 呼叫');
 
   // 若文字中無 _journal_url，試用期刊名查 OpenAlex 補上
   if (!/^_journal_url:/m.test(text)) {
@@ -1057,12 +1062,10 @@ async function callOpenAI(text) {
       const jUrl = await fetchJournalUrlFromOpenAlex(journalMatch[1].trim());
       if (jUrl) {
         text = `_journal_url: ${jUrl}\n` + text;
-        console.log('[論著助手] OpenAlex 期刊 URL:', jUrl);
       }
     }
   }
 
-  console.log('── 輸入文字 ──\n' + text);
   const openaiRes = await fetch('https://www.myai168.com/tw/api/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -1102,15 +1105,78 @@ async function callOpenAI(text) {
         if      (kana > 0 && kana >= cjk) parsed.lang_cod = '04';
         else if (cjk > latin)             parsed.lang_cod = '50';
         else if (latin > 0)               parsed.lang_cod = '01';
-        console.log('[lang]', { title: titleForLang.slice(0, 40), cjk, latin, kana, lang_cod: parsed.lang_cod });
       }
     }
-    // sta_ut_nam 安全檢查：若與作者姓名完全相同，一律清空（AI 誤把姓名填入系所）
+    // sta_ut_nam 後處理：去除大學名稱前綴，並將政大英文系所名翻成中文縮寫
+    const _NCCU_DEPT_MAP = [
+      [/Mathematical\s+Sciences|Applied\s+Mathematics/i,                  '應數系'],
+      [/Statistics/i,                                                       '統計系'],
+      [/Management\s+Information\s+Systems/i,                              '資管系'],
+      [/Information\s+Management/i,                                        '資管系'],
+      [/Computer\s+Science\s+and\s+Information\s+Engineering/i,            '資科系'],
+      [/Computer\s+Science/i,                                               '資訊系'],
+      [/Risk\s+Management\s+and\s+Insurance/i,                             '風管系'],
+      [/Public\s+Finance/i,                                                 '財政系'],
+      [/Finance/i,                                                           '財管系'],
+      [/Accounting/i,                                                        '會計系'],
+      [/International\s+Business/i,                                         '國貿系'],
+      [/Business\s+Administration/i,                                        '企管系'],
+      [/Economics/i,                                                         '經濟系'],
+      [/Political\s+Science/i,                                              '政治系'],
+      [/Diplomacy/i,                                                         '外交系'],
+      [/Public\s+Administration/i,                                          '公行系'],
+      [/Sociology/i,                                                         '社會系'],
+      [/Psychology/i,                                                        '心理系'],
+      [/History/i,                                                           '歷史系'],
+      [/Chinese\s+Literature|Department\s+of\s+Chinese(?!\s+Language)/i,   '中文系'],
+      [/English/i,                                                           '英文系'],
+      [/Journalism/i,                                                        '新聞系'],
+      [/Advertising/i,                                                       '廣告系'],
+      [/Radio.*Television|Broadcasting|Radio.*Film/i,                       '廣電系'],
+      [/Land\s+Economics/i,                                                 '地政系'],
+      [/Land\s+Administration/i,                                            '土文系'],
+      [/Social\s+Work/i,                                                    '社工所'],
+      [/Ethnic\s+Relations/i,                                               '民族系'],
+      [/Religious\s+Studies/i,                                              '宗教所'],
+      [/Philosophy/i,                                                        '哲學系'],
+      [/Law/i,                                                               '法律系'],
+      [/East\s+Asian\s+Studies/i,                                           '東亞所'],
+      [/Russian\s+Studies/i,                                                '俄研所'],
+      [/Development\s+Studies/i,                                            '國發所'],
+      [/Korean/i,                                                            '韓文系'],
+      [/Arabic/i,                                                            '阿文系'],
+      [/Japanese/i,                                                          '日文系'],
+      [/European\s+Languages/i,                                             '歐洲語文學系'],
+      [/Southeast\s+Asian/i,                                                '東南亞語系'],
+      [/Slavic\s+Languages/i,                                               '斯拉夫文系'],
+      [/Library.*Information.*Archival|Library\s+Science/i,                '圖檔所'],
+      [/Education/i,                                                         '教育系'],
+      [/Linguistics/i,                                                       '語言所'],
+      [/Labor\s+(?:Relations|Studies)/i,                                    '勞工所'],
+      [/Early\s+Childhood/i,                                                '幼教所'],
+      [/International\s+Affairs|International\s+Studies/i,                 '國關中心'],
+      [/Technology.*Intellectual\s+Property|Science\s+Management/i,        '科管智財所'],
+      [/Communication/i,                                                    '新聞系'],
+    ];
     if (Array.isArray(parsed.authors)) {
       parsed.authors = parsed.authors.map(a => {
+        // 與作者姓名完全相同 → 清空（AI 誤填）
         if (a.sta_ut_nam && a.sta_chi &&
             a.sta_ut_nam.trim() === a.sta_chi.trim()) {
           a.sta_ut_nam = '';
+        }
+        // 去除開頭的大學/學院名稱（中文或英文）
+        if (a.sta_ut_nam) {
+          a.sta_ut_nam = a.sta_ut_nam
+            .replace(/^[一-鿿]{2,}(?:大學|學院|大學院)[,，\s]*/u, '')
+            .replace(/^[\w\s\-'']{5,}(?:University|College|Institute|School)[,，\s]*/i, '')
+            .trim();
+        }
+        // 英文系所名 → 政大中文縮寫（只在沒有 CJK 字元時套用）
+        if (a.sta_ut_nam && !/[一-鿿]/.test(a.sta_ut_nam)) {
+          for (const [re, zh] of _NCCU_DEPT_MAP) {
+            if (re.test(a.sta_ut_nam)) { a.sta_ut_nam = zh; break; }
+          }
         }
         return a;
       });
@@ -1123,13 +1189,8 @@ async function callOpenAI(text) {
       const bookLine = text.match(/^Book: (.+)$/m)?.[1]?.trim();
       if (bookLine) parsed.set_title = bookLine;
     }
-    console.log('── AI 回傳 JSON ──');
-    console.log(parsed);
-    console.groupEnd();
     return parsed;
-  } catch (e) {
-    console.error('AI 回傳非 JSON：', rawJson);
-    console.groupEnd();
+  } catch {
     throw new Error(`AI 回傳內容不是合法 JSON：${rawJson.substring(0, 100)}`);
   }
 }
@@ -1395,7 +1456,6 @@ async function enrichPublicationText(rawText) {
     wosSubtype    ? `\n_wos_subtype: "${wosSubtype}"`                                          : '',
   ].join('');
 
-  console.log('[enrichPublicationText] 附加標注：', annotation.trim());
   return rawText + annotation;
 }
 
@@ -1649,6 +1709,13 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
        'published-print', 'published-online', 'issued',
        'ISSN', 'ISBN', 'issn-type', 'keyword', 'subject', 'event');
 
+  // ISBN：多個時優先取 print（依 isbn-type），否則取第一個，避免 AI 收到陣列
+  if (Array.isArray(d.ISBN) && d.ISBN.length > 0) {
+    const isbnTypes = work['isbn-type'] || [];
+    const printEntry = isbnTypes.find(t => t.type === 'print');
+    d.ISBN = printEntry ? printEntry.value : d.ISBN[0];
+  }
+
   // 作者：CrossRef 機構優先，否則從 OpenAlex 補；ORCID dept 另存 orcid-dept 欄位
   if (work.author?.length) {
     d.author = work.author.map((a, i) => {
@@ -1823,7 +1890,6 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
   try {
     const host = new URL(url).hostname;
     if (DB_SKIP_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
-      console.log('[fetchMetaFromHtml] 跳過資料庫平台:', host);
       return { doi: '', abstract: '' };
     }
     const res = await fetch(url, {
@@ -1873,7 +1939,6 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
           const absUrl = new URL(redirectUrl, res.url).href;
           const absHost = new URL(absUrl).hostname;
           if (!DB_SKIP_HOSTS.some(h => absHost === h || absHost.endsWith('.' + h))) {
-            console.log('[fetchMetaFromHtml] JS redirect →', absUrl);
             return fetchMetaFromHtml(absUrl, _depth + 1, _returnHtml);
           }
         } catch {}
@@ -1881,13 +1946,16 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
     }
 
     // 通用 meta 抓取（minLen 控制最短字元數，避免抓到無意義短字串）
+    // 雙引號與單引號分開處理，避免摘要中的 apostrophe 提前截斷
     const getMeta = (minLen, ...names) => {
       for (const name of names) {
-        const re1 = new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]+content=["']([^"']{${minLen},})["']`, 'i');
-        const re2 = new RegExp(`<meta[^>]+content=["']([^"']{${minLen},})["'][^>]+(?:name|property)=["']${name}["']`, 'i');
-        const m = html.match(re1) || html.match(re2);
-        if (m?.[1]) return m[1].trim()
-          .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'");
+        for (const q of ['"', "'"]) {
+          const re1 = new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]+content=${q}([^${q}]{${minLen},})${q}`, 'i');
+          const re2 = new RegExp(`<meta[^>]+content=${q}([^${q}]{${minLen},})${q}[^>]+(?:name|property)=["']${name}["']`, 'i');
+          const m = html.match(re1) || html.match(re2);
+          if (m?.[1]) return m[1].trim()
+            .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'");
+        }
       }
       return '';
     };
@@ -1904,6 +1972,8 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
       const realAbs = abstract.match(/\bAbstract\b\s*([\s\S]{50,})/i)?.[1]?.trim();
       abstract = realAbs || '';
     }
+    // AH 平台樣板（非論著摘要）：過濾掉
+    if (/NCCU\s+Academic\s+Hub|academic\s+output\s+collection|政大學術集成/i.test(abstract)) abstract = '';
 
     // 摘要 Level 2a：class/id 含 "abstract(s)" 的元素（跳過含 "highlight" 的元素）
     if (!abstract) {
@@ -1983,10 +2053,8 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
         .trim();
     }
 
-    console.log('[fetchMetaFromHtml]', url, '→', res.url, `(${res.status}, ${html.length}chars)`, '| doi:', doi || '(none)', '| abstract:', abstract ? abstract.slice(0, 60) + '…' : '(none)');
     return { doi, abstract, ...(_returnHtml ? { _html: html } : {}) };
-  } catch (e) {
-    console.warn('[fetchMetaFromHtml] 失敗:', url, e.message);
+  } catch {
     return { doi: '', abstract: '' };
   }
 }
@@ -2027,16 +2095,13 @@ async function fetchDoiHtmlMeta(doi) {
       redirect: 'follow'
     });
     const ct = res.headers.get('content-type') || '';
-    console.log('[fetchDoiHtmlMeta]', doi, '→', res.url, res.status, ct.slice(0, 40));
     if (!res.ok) return null;
     if (!ct.includes('html')) return null;
     const html = await res.text();
     const meta = parseHtmlMeta(html);
-    console.log('[fetchDoiHtmlMeta]', doi, '→ volume=', meta?.volume, 'issue=', meta?.issue, 'page=', meta?.page, 'year=', meta?.issued?.['date-parts']?.[0]?.[0], 'abstract=', meta?.abstract ? meta.abstract.slice(0,30)+'…' : '(none)', 'ISSN=', meta?.ISSN, 'kw=', meta?.keywords?.length);
     if (!meta) return null;
     return { ...meta, _pageUrl: res.url };
-  } catch (e) {
-    console.warn('[fetchDoiHtmlMeta] 失敗：', doi, e.message);
+  } catch {
     return null;
   }
 }
@@ -2045,17 +2110,22 @@ async function fetchDoiHtmlMeta(doi) {
 function parseHtmlMeta(html) {
   const getMeta = (names) => {
     for (const name of [].concat(names)) {
-      const m = html.match(new RegExp('<meta[^>]+(?:name|property)=["\']' + name + '["\'][^>]+content=["\']([^"\']+)["\']', 'i'))
-             || html.match(new RegExp('<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:name|property)=["\']' + name + '["\']', 'i'));
-      if (m?.[1]) return m[1].trim();
+      for (const q of ['"', "'"]) {
+        const m = html.match(new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]+content=${q}([^${q}]+)${q}`, 'i'))
+               || html.match(new RegExp(`<meta[^>]+content=${q}([^${q}]+)${q}[^>]+(?:name|property)=["']${name}["']`, 'i'));
+        if (m?.[1]) return m[1].trim();
+      }
     }
     return '';
   };
   const getMetas = (name) => {
-    const re = new RegExp('<meta[^>]+(?:name|property)=["\']' + name + '["\'][^>]+content=["\']([^"\']+)["\']', 'gi');
     const results = [];
-    let m;
-    while ((m = re.exec(html)) !== null) results.push(m[1].trim());
+    for (const q of ['"', "'"]) {
+      const re = new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]+content=${q}([^${q}]+)${q}`, 'gi');
+      let m;
+      while ((m = re.exec(html)) !== null) results.push(m[1].trim());
+      if (results.length) break;
+    }
     return results;
   };
 

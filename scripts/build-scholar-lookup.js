@@ -43,4 +43,3 @@ for (let i = 1; i < lines.length; i++) {
 }
 
 fs.writeFileSync(outPath, JSON.stringify(result, null, 2), 'utf-8');
-console.log(`✓ 產生 ${Object.keys(result).length} 筆 → ${outPath}（略過 ${skipped} 筆無員編）`);

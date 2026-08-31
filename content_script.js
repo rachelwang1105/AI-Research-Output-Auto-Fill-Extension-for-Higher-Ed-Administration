@@ -75,23 +75,6 @@ function highlightManualByName(name) {
 }
 
 
-// ── Debug：列印可見表單欄位（排除 hidden），方便對照 name ─
-function logFormFields() {
-  const fields = [];
-  document.querySelectorAll('input[name], select[name], textarea[name]').forEach(el => {
-    if (el.type === 'hidden') return;
-    fields.push({
-      type: el.type || el.tagName.toLowerCase(),
-      name: el.name,
-    });
-  });
-  if (fields.length) {
-    console.group('[論著助手] 頁面可見表單欄位');
-    console.table(fields);
-    console.groupEnd();
-  }
-}
-
 
 // ── 判斷目前是否為第二層頁面 ─────────────────────────────
 // 第一層沒有 authlist；第二層一定有 authlist[0].sta_chi（第一位作者輸入欄）。
@@ -182,8 +165,6 @@ function findAddAuthorButton() {
 
 async function fillAuthors(authors) {
   if (!authors.length) return;
-  console.log('[論著助手] fillAuthors 共', authors.length, '位作者');
-
   const fillRow = (i, a) => {
     setText (`authlist[${i}].sta_chi`,    a.sta_chi    || '', true);
     setText (`authlist[${i}].sta_ut_nam`, a.sta_ut_nam || '', true);
@@ -195,17 +176,12 @@ async function fillAuthors(authors) {
     let tries = 0;
     while (!document.querySelector(`[name="authlist[${i}].sta_chi"]`) && tries < 8) {
       const btn = findAddAuthorButton();
-      if (!btn) {
-        console.warn('[論著助手] 找不到新增作家按鈕，放棄第', i, '位作者');
-        break;
-      }
-      console.log(`[論著助手] 點擊新增按鈕（第${i}位），按鈕:`, btn.value || btn.textContent || btn.tagName);
+      if (!btn) break;
       btn.click();
       await new Promise(r => setTimeout(r, 1000));
       tries++;
     }
     const exists = !!document.querySelector(`[name="authlist[${i}].sta_chi"]`);
-    console.log(`[論著助手] authlist[${i}] 欄位${exists ? '已出現' : '不存在'}，填入作者:`, authors[i]?.sta_chi);
     if (exists) fillRow(i, authors[i]);
   }
 }
@@ -400,7 +376,7 @@ function clearHighlight() {
 // ── 接收 popup 廣播（第一層即時填入）────────────────────
 window.addEventListener('nccu_fillForm', (e) => {
   try { fillFirstLayer(e.detail); }
-  catch (err) { console.error('[論著助手] 第一層填入失敗：', err); }
+  catch { }
 });
 
 // 手動觸發（popup 的「填入表單」按鈕）：填入當前頁面所有可用欄位
@@ -408,9 +384,7 @@ window.addEventListener('nccu_reFill', (e) => {
   try {
     fillFirstLayer(e.detail);
     if (isSecondLayerPage()) fillSecondLayer(e.detail);
-  } catch (err) {
-    console.error('[論著助手] 手動填入失敗：', err);
-  }
+  } catch { }
 });
 
 window.addEventListener('nccu_clearHighlight', () => {
@@ -425,13 +399,10 @@ let _autoFillDone = false;
 async function tryAutoFillSecondLayer() {
   if (_autoFillDone) return;
   const onSecond = isSecondLayerPage();
-  console.log('[論著助手] tryAutoFill: isSecondLayer=', onSecond,
-    '| authlist[0].sta_chi=', !!document.querySelector('[name="authlist[0].sta_chi"]'));
   if (!onSecond) return;
 
   const { pendingFillData, filledPhase } =
     await chrome.storage.local.get(['pendingFillData', 'filledPhase']);
-  console.log('[論著助手] tryAutoFill: filledPhase=', filledPhase, '| hasPendingData=', !!pendingFillData);
   if (!pendingFillData || filledPhase !== 1) return;
 
   _autoFillDone = true;
@@ -439,16 +410,13 @@ async function tryAutoFillSecondLayer() {
     fillSecondLayer(pendingFillData);
     await chrome.storage.local.set({ filledPhase: 2 });
     chrome.runtime.sendMessage({ action: 'secondLayerFilled' }).catch(() => {});
-    console.log('[論著助手] 第二層已自動填入');
   } catch (err) {
     _autoFillDone = false;
-    console.error('[論著助手] 第二層填入失敗：', err);
   }
 }
 
 // 1. 頁面載入即執行（全頁跳轉 / iframe 重新載入）
 (async () => {
-  logFormFields();
   await tryAutoFillSecondLayer();
 })();
 

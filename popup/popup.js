@@ -190,12 +190,9 @@ function detectDoiFromPage(tabId) {
     {
       target: { tabId, allFrames: false },
       func: () => {
-        console.log('[論著助手] executeScript 開始執行, url=', location.href.slice(0, 80));
         // ── Airiti 華藝線上圖書館 ──────────────────────────────
         if (location.hostname === 'www.airitilibrary.com' && location.pathname.startsWith('/Article/Detail')) {
-          // debug: 印出所有可見 h2 的文字，幫助診斷 cookie 橫幅問題
           const h2sAll = [...document.querySelectorAll('h2')].filter(el => el.offsetParent !== null);
-          console.log('[論著助手] Airiti h2 清單:', h2sAll.map(el => JSON.stringify(el.textContent.trim().slice(0, 60))));
           // 若任一可見 h2 含 cookie/本網站 等 cookie 橫幅字樣，改由背景擷取
           const COOKIE_RE = /cookie|本網站|隱私|privacy/i;
           if (h2sAll.some(el => COOKIE_RE.test(el.textContent))) return { type: 'fetch_url', url: location.href };
@@ -248,18 +245,6 @@ function detectDoiFromPage(tabId) {
             const kwZh = getAfterH3('關鍵字').split(/[；;]/).map(k => k.trim()).filter(Boolean);
             const kwEn = getAfterH3('並列關鍵字').split(/[；;]/).map(k => k.trim()).filter(Boolean);
             const keywords = kwZh.length ? kwZh : kwEn;
-
-            console.group('[論著助手] Airiti 擷取結果');
-            console.log('中文標題:', title);
-            console.log('英文標題:', engTitle);
-            console.log('作者:', authors);
-            console.log('期刊原始文字:', jnlText);
-            console.log('→ 期刊名:', jnl, '| 卷:', vol, '| 期:', iss, '| 年:', year, '| 月:', month, '| 頁:', pages);
-            console.log('DOI:', doi);
-            console.log('摘要 (前100字):', abstract.slice(0, 100));
-            console.log('中文關鍵字:', kwZh);
-            console.log('英文關鍵字:', kwEn);
-            console.groupEnd();
 
             const lines = ['Title: ' + (engTitle || title)];
             if (engTitle && title !== engTitle) lines.push('Title (zh): ' + title);
@@ -343,10 +328,8 @@ function detectDoiFromPage(tabId) {
             if (_kws.length) _lines.push(`Keywords: ${_kws.join('; ')}`);
             if (_abstract)   _lines.push(`Abstract: ${_abstract}`);
             _lines.push(`URL: ${location.href}`);
-            console.log('[論著助手] thesis.lib.nccu.edu.tw 擷取成功:', _title, '| 作者:', _author, '| 系所:', _dept);
             return { type: 'metadata', value: _lines.join('\n'), title: _title };
           }
-          console.log('[論著助手] thesis.lib 找不到論文名稱, thMap keys=', Object.keys(_thMap).join(', '));
         }
 
         // 1. meta tag：DOI（Highwire、bepress、DC、PRISM）
@@ -390,6 +373,18 @@ function detectDoiFromPage(tabId) {
         // 7. 無識別碼：從 Highwire / Dublin Core / Open Graph / JSON-LD 擷取書目 metadata
         const getMeta  = n => document.querySelector(`meta[name="${n}"]`)?.content?.trim() || '';
         const getMetas = n => [...document.querySelectorAll(`meta[name="${n}"]`)].map(m => m.content?.trim()).filter(Boolean);
+        // AH DOM 補抓：以 regex 搜尋 metadataFieldLabel 文字，取對應的 metadataFieldValue
+        const _getAhField = (labelRe) => {
+          let cur = null;
+          for (const el of document.querySelectorAll(
+              '.metadataFieldLabel,.metadataFieldLabel1,.metadataFieldValue')) {
+            const isLbl = el.classList.contains('metadataFieldLabel')
+                       || el.classList.contains('metadataFieldLabel1');
+            if (isLbl) cur = el.textContent.trim();
+            else if (cur && labelRe.test(cur)) return el.textContent.trim();
+          }
+          return '';
+        };
         const getOg    = p => document.querySelector(`meta[property="${p}"]`)?.content?.trim() || '';
 
         // Highwire Press citation 標籤（Google Scholar 規範，學術出版商廣泛使用）
@@ -435,13 +430,18 @@ function detectDoiFromPage(tabId) {
                         || getMeta('DC.date.issued')      || getMeta('dc.date.issued')
                         || getMeta('DC.date.created')     || getMeta('dc.date.created');
         // 摘要：AH/DSpace 用 DCTERMS.abstract；部分 repo 用 DC.description.abstract；最後才退到 DC.description
-        const dcDesc     = getMeta('DCTERMS.abstract')         || getMeta('dcterms.abstract')
+        // AH 頁面的 DCTERMS.abstract 存的是平台介紹樣板而非論著摘要，偵測到就過濾並改抓 DOM
+        const _rawDesc   = getMeta('DCTERMS.abstract')         || getMeta('dcterms.abstract')
                         || getMeta('DC.description.abstract') || getMeta('dc.description.abstract')
                         || getMeta('DC.description')          || getMeta('dc.description');
+        const _isAhBoilerplate = v => /NCCU\s+Academic\s+Hub|academic\s+output\s+collection|政大學術集成/i.test(v);
+        const dcDesc     = (_isAhBoilerplate(_rawDesc) ? '' : _rawDesc)
+                        || (() => { const d = _getAhField(/摘要|[Aa]bstract/); return _isAhBoilerplate(d) ? '' : d; })();
         // 來源：只取非 URL 的值（論文記錄的 DC.relation 常存 URL，不能當期刊名）
         const dcSourceRaw = getMeta('DC.source')          || getMeta('dc.source')
                         || getMeta('DC.relation.ispartof')|| getMeta('dc.relation.ispartof')
-                        || getMeta('DC.relation')         || getMeta('dc.relation');
+                        || getMeta('DC.relation')         || getMeta('dc.relation')
+                        || _getAhField(/dc\.relation|關聯/i);
         const dcSource   = dcSourceRaw && /^https?:\/\//.test(dcSourceRaw) ? '' : (dcSourceRaw || '');
         const dcType     = getMeta('DC.type')             || getMeta('dc.type')
                         || (() => {
@@ -471,7 +471,8 @@ function detectDoiFromPage(tabId) {
         const _dcDescs   = getMetas('DC.description').concat(getMetas('dc.description'));
         const dcDept     = getMeta('DC.contributor.department') || getMeta('dc.contributor.department')
                         || getMeta('DC.description.department') || getMeta('dc.description.department')
-                        || _dcDescs.find(v => /[系所院組]/.test(v) && v.length < 30) || '';
+                        || _dcDescs.find(v => /[系所院組]/.test(v) && v.length < 30)
+                        || _getAhField(/^dc\.contributor(?!\.(author|creator|editor|department))/i) || '';
 
         // Open Graph
         const ogTitle  = getOg('og:title');
@@ -554,11 +555,13 @@ function detectDoiFromPage(tabId) {
               return null;
             })();
             const authors = _authorLinks || gvs('作者', 'Author', 'Authors');
-            console.log('[論著助手] DOM fallback authors=', JSON.stringify(authors));
             const dateRaw   = gv('日期', 'Date');
             const year      = dateRaw.match(/\d{4}/)?.[0] || '';
-            const abstract  = gv('摘要', 'Abstract');
-            const source    = gv('關聯', 'Relation', 'Source');
+            const abstractRaw = gv('摘要', 'Abstract');
+            const abstract  = _isAhBoilerplate(abstractRaw) ? '' : abstractRaw;
+            const source    = gv('關聯', 'Relation', 'Source')
+                           || _getAhField(/dc\.relation|關聯/i);
+            const dept      = _getAhField(/^dc\.contributor(?!\.(author|creator|editor|department))/i);
             const type      = gv('資料類型', 'Type') || h3TypeHint;
             const lang      = gv('語言', 'Language');
             const publisher = gv('出版者', 'Publisher');
@@ -577,9 +580,10 @@ function detectDoiFromPage(tabId) {
             if (dateRaw)         lines.push(`Date: ${dateRaw}`);
             else if (year)       lines.push(`Year: ${year}`);
             if (type)            lines.push(`Type: ${type}`);
-            if (sourceClean)     lines.push(`Journal/Source: ${sourceClean}`);
+            if (sourceClean)     lines.push(`${/multimedia/i.test(type) ? 'Event' : 'Journal/Source'}: ${sourceClean}`);
             if (isbn)            lines.push(`ISBN: ${isbn}`);
             if (publisher)       lines.push(`Publisher: ${publisher}`);
+            if (dept)            lines.push(`Department: ${dept}`);
             if (lang)            lines.push(`Language: ${lang}`);
             if (keywords.length) lines.push(`Keywords: ${keywords.join('; ')}`);
             if (abstract)        lines.push(`Abstract: ${abstract.slice(0, 2000)}`);
@@ -595,7 +599,6 @@ function detectDoiFromPage(tabId) {
               lines.push(`_pre_authors_json: ${_paj}`);
               const _dept = gv('系所', '系所單位', 'Department');
               if (_dept) lines.push(`_pre_dept: ${_dept}`);
-              console.log('[論著助手] DOM fallback _pre_authors_json=', _paj, 'authors=', JSON.stringify(authors));
             }
             return { type: 'metadata', value: lines.join('\n'), title };
           })();
@@ -655,7 +658,12 @@ function detectDoiFromPage(tabId) {
           || ldDateRaw || domDateRaw || '';
         const finalYear     = finalDateRaw.match(/\d{4}/)?.[0] || '';
         const finalJnl      = hwJnl || hwConf || dcSource || ldJnl || '';
-        const finalAbstract = hwAbs  || dcDesc || ldDesc  || ogDesc || '';
+        // AH 頁面的 meta tag（citation_abstract / DCTERMS.abstract / og:description）全是平台樣板
+        // 只信任 DOM 表格的摘要欄位；其他來源保留給非 AH 頁面
+        const isAhPage = /ah\.lib\.nccu\.edu\.tw/i.test(location.hostname);
+        const finalAbstract = isAhPage
+          ? (() => { const d = _getAhField(/摘要|[Aa]bstract/); return _isAhBoilerplate(d) ? '' : (d || ''); })()
+          : ([hwAbs, dcDesc, ldDesc, ogDesc].find(v => v && !_isAhBoilerplate(v)) || '');
         const finalPub      = hwPub  || dcPub  || ldPub  || '';
         // DSpace 頁面的 dc.language.iso meta tag 常填錯（預設 zh_TW）
         // 改抓 DOM 可見的語言欄位；沒顯示語言就不傳，讓 AI 從 title 判斷
@@ -711,7 +719,10 @@ function detectDoiFromPage(tabId) {
           if (bookPages)         lines.push(`Pages: ${bookPages}`);
         } else {
           // 過濾純 URL（論文記錄的 DC.relation 常是學位論文系統連結，不適合當來源名稱）
-          if (finalJnl && !/^https?:\/\//.test(finalJnl)) lines.push(`Journal/Source: ${finalJnl}`);
+          if (finalJnl && !/^https?:\/\//.test(finalJnl)) {
+            const isMultimedia = dcType && /multimedia/i.test(dcType);
+            lines.push(isMultimedia ? `Event: ${finalJnl}` : `Journal/Source: ${finalJnl}`);
+          }
           if (hwVol)             lines.push(`Volume: ${hwVol}`);
           if (hwIss)             lines.push(`Issue: ${hwIss}`);
           if (hwSP && hwEP)      lines.push(`Pages: ${hwSP}-${hwEP}`);
@@ -734,12 +745,6 @@ function detectDoiFromPage(tabId) {
           }));
           lines.push(`_pre_authors_json: ${_preAuthsJson}`);
           if (dcDept) lines.push(`_pre_dept: ${dcDept}`);
-          console.log('[論著助手] _dsDomAuthors=', JSON.stringify(_dsDomAuthors),
-            'finalAuthors=', JSON.stringify(finalAuthors),
-            '→ _pre_authors_json=', _preAuthsJson);
-        } else {
-          console.log('[論著助手] finalAuthors count=' + finalAuthors.length + '（≤1，不寫入 _pre_authors_json）',
-            '_dsDomAuthors=', JSON.stringify(_dsDomAuthors));
         }
 
         return { type: 'metadata', value: lines.join('\n'), title: finalTitle };
@@ -1777,7 +1782,6 @@ async function processNextFromQueue() {
     pendingTabId = tabs[0].id;
 
     // 檔案有 URL 但無 DOI → 先抓頁面 meta tag 試取 DOI / 摘要補強
-    console.log('[processNextFromQueue] identifierValue:', JSON.stringify(work.identifierValue), 'needsDoi:', work.needsDoi, 'hasURL:', /^URL: /m.test(work.formattedText));
     const urlInText = !work.identifierValue && work.formattedText.match(/^URL: (.+)$/m)?.[1];
     if (urlInText) {
       setStep(1, 'active');
@@ -1795,7 +1799,8 @@ async function processNextFromQueue() {
               // CrossRef 失敗但有 DOI → 加進文字讓 AI 能用
               let text = work.formattedText;
               if (!/^DOI: /m.test(text)) text = `DOI: ${res.doi}\n` + text;
-              if (res.abstract && !/^Abstract: /m.test(text)) text += `\nAbstract: ${res.abstract}`;
+              const _ab1 = res.abstract;
+              if (_ab1 && !/NCCU\s+Academic\s+Hub|academic\s+output\s+collection|政大學術集成/i.test(_ab1) && !/^Abstract: /m.test(text)) text += `\nAbstract: ${_ab1}`;
               pendingFormattedText = text;
               setStep(1, 'done');
               showConfirm({ ...work, formattedText: text });
@@ -1804,7 +1809,8 @@ async function processNextFromQueue() {
         } else {
           // 抓不到 DOI，但可能有摘要
           let text = work.formattedText;
-          if (res?.abstract && !/^Abstract: /m.test(text)) text += `\nAbstract: ${res.abstract}`;
+          const _ab2 = res?.abstract;
+          if (_ab2 && !/NCCU\s+Academic\s+Hub|academic\s+output\s+collection|政大學術集成/i.test(_ab2) && !/^Abstract: /m.test(text)) text += `\nAbstract: ${_ab2}`;
           pendingFormattedText = text;
           setStep(1, 'done');
           showConfirm({ ...work, formattedText: text });
@@ -1964,11 +1970,20 @@ function showPreview(data) {
 function show(el) { el.classList.remove('hidden'); }
 function hide(el) { el.classList.add('hidden'); }
 
-// 接收 content script 通知：第二層已自動填入
+// 接收 content script 通知 / background 事件
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'secondLayerFilled') {
     setStep(4, 'done');
     updateQueueButton();
+  }
+
+  // 分頁切換：僅在使用者未進行中流程時更新頁面偵測狀態列
+  if (message.type === 'TAB_CHANGED') {
+    const cls = id => document.getElementById(id)?.className || '';
+    const midFlow = cls('step1').includes('done')
+                 || cls('step2').includes('active')
+                 || cls('step3').includes('active');
+    if (!midFlow) checkCurrentPage();
   }
 });
 
