@@ -882,8 +882,8 @@ btnAddPageMeta.addEventListener('click', async () => {
   const { orcidQueue = [] } = await chrome.storage.local.get('orcidQueue');
   await chrome.storage.local.set({ orcidQueue: [...orcidQueue, entry] });
 
-  tabQueue.click();
   await renderPendingQueue();
+  await checkNewOrcidWorks();
 });
 
 fileImport.addEventListener('change', async (e) => {
@@ -1336,12 +1336,12 @@ btnCancel.addEventListener('click', async () => {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tabId = tabs[0].id;
 
-  // 同樣廣播到所有 iframe
+  // 清除填入值並移除 highlight
   chrome.scripting.executeScript(
     {
       target: { tabId: tabId, allFrames: true },
       func: () => {
-        window.dispatchEvent(new CustomEvent('nccu_clearHighlight'));
+        window.dispatchEvent(new CustomEvent('nccu_clearFill'));
       }
     },
     () => {
@@ -1555,20 +1555,38 @@ btnSaveOrcid.addEventListener('click', async () => {
     return;
   }
   const toSave = { orcidId: id, orcidKnown: [], orcidNewWorks: [] };
-  // 若有員工編號，一起存入自訂對應表，日後可自動帶入
   const empId = empInput.value.trim();
   if (empId && /^\d{4,7}$/.test(empId)) {
+    // 有員工編號：存入對應表，並補查 scholarId
     const { customEmpOrcidMap = {} } = await chrome.storage.sync.get('customEmpOrcidMap');
     customEmpOrcidMap[empId] = id;
     await chrome.storage.sync.set({ customEmpOrcidMap });
     toSave.savedEmpId = empId;
+    await new Promise(resolve => {
+      chrome.runtime.sendMessage({ action: 'lookupOrcidByEmpId', empId }, res => {
+        if (res?.scholarId) toSave.scholarId = res.scholarId;
+        resolve();
+      });
+    });
+  } else {
+    // 沒有員工編號：用 ORCID 反查 scholarId
+    await new Promise(resolve => {
+      chrome.runtime.sendMessage({ action: 'lookupScholarIdByOrcid', orcid: id }, res => {
+        if (res?.scholarId) toSave.scholarId = res.scholarId;
+        resolve();
+      });
+    });
+  }
+  if (!empId) {
+    await chrome.storage.local.remove(['savedEmpId', 'scholarId']);
+    empInput.value = '';
   }
   await chrome.storage.local.set(toSave);
-  orcidStatus.textContent = empId
-    ? `已儲存，員工編號 ${empId} 與 ORCID 的對應已記住`
-    : '已儲存，將於下次檢查時掃描所有著作';
+  await loadOrcidSettings();
   btnSaveOrcid.textContent = '已儲存 ✓';
   setTimeout(() => { btnSaveOrcid.textContent = '儲存'; }, 2000);
+  // 儲存後自動重新查詢
+  btnCheckOrcid.click();
 });
 
 btnCheckOrcid.addEventListener('click', async () => {
@@ -1887,13 +1905,54 @@ async function processNextFromQueue() {
     return;
   }
 
-  // 舊格式 ORCID（有 DOI）或 identifierType 格式 → 填入輸入框讓使用者觸發
-  const displayValue = work.doi
-    || (work.identifierType === 'pmid' ? `PMID:${work.identifierValue}` : work.identifierValue)
-    || '';
-  tabDoi.click();
-  doiInput.value = displayValue;
-  show(sectionInput);
+  // 有 DOI → 直接查 CrossRef，不透過輸入框
+  if (work.doi) {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    pendingTabId = tabs[0].id;
+    setStep(1, 'active');
+    showLoading('查詢 CrossRef 書目資料…');
+    chrome.runtime.sendMessage({ action: 'fetchMetadata', doi: work.doi }, (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        showError(response?.error || '書目查詢失敗');
+        return;
+      }
+      pendingFormattedText = response.data.formattedText;
+      setStep(1, 'done');
+      showConfirm(response.data);
+    });
+    return;
+  }
+
+  // identifierType 格式（PMID / arXiv / ISBN）→ 直接查
+  if (work.identifierType && work.identifierValue) {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    pendingTabId = tabs[0].id;
+    const iv = work.identifierValue;
+    const handleRes = (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        showError(response?.error || '書目查詢失敗');
+        return;
+      }
+      pendingFormattedText = response.data.formattedText;
+      setStep(1, 'done');
+      showConfirm(response.data);
+    };
+    setStep(1, 'active');
+    if (work.identifierType === 'pmid') {
+      showLoading('從 PubMed 取得書目資料…');
+      chrome.runtime.sendMessage({ action: 'fetchPubMed', pmid: iv }, handleRes);
+    } else if (work.identifierType === 'arxiv') {
+      showLoading('從 arXiv 取得書目資料…');
+      chrome.runtime.sendMessage({ action: 'fetchArxiv', arxivId: iv }, handleRes);
+    } else if (work.identifierType === 'isbn') {
+      showLoading('查詢 ISBN 書目資料…');
+      chrome.runtime.sendMessage({ action: 'fetchISBN', isbn: iv }, handleRes);
+    } else {
+      showLoading('查詢書目資料…');
+      chrome.runtime.sendMessage({ action: 'fetchMetadata', doi: iv }, handleRes);
+    }
+    return;
+  }
 }
 
 function fetchOrcidFallback(work) {
