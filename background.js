@@ -205,8 +205,8 @@ async function checkOrcidWorks() {
   const { orcidNewWorks = [] } = await chrome.storage.local.get('orcidNewWorks');
 
   if (newWorks.length > 0) {
-    const flaggedNewWorks = annotateAhStatus(newWorks, ahItems);
-    const reannotated = annotateAhStatus(
+    const flaggedNewWorks = await annotateAhStatus(newWorks, ahItems);
+    const reannotated = await annotateAhStatus(
       orcidNewWorks.filter(old => !flaggedNewWorks.find(n => n.putCode === old.putCode)),
       ahItems
     );
@@ -221,7 +221,7 @@ async function checkOrcidWorks() {
     });
   } else {
     // 無新著作：只更新現有待辦著作的 AH 狀態
-    update.orcidNewWorks = annotateAhStatus(orcidNewWorks, ahItems);
+    update.orcidNewWorks = await annotateAhStatus(orcidNewWorks, ahItems);
     await chrome.storage.local.set(update);
   }
 }
@@ -644,15 +644,30 @@ function jaccardMatch(a, b) {
   return inter / union >= 0.7;
 }
 
+// 從 AH 論著詳細頁面擷取 DOI（純 regex，不需 DOM）
+async function fetchAhItemDoi(itemId) {
+  try {
+    const res = await fetch(`https://ah.lib.nccu.edu.tw/item?id=${itemId}`, { headers: { Accept: 'text/html' } });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const m = html.match(/\b(10\.\d{4,}\/[^\s"'<>\]]+)/i);
+    return m ? m[1].replace(/[.,;:]+$/, '').toLowerCase() : null;
+  } catch { return null; }
+}
+
 // 用 AH 清單標記「是否已建檔」，不過濾，只加 alreadyInAh 欄位
-// 比對策略：精確包含 OR Jaccard詞集 ≥0.7；年份容差 1 年
-function annotateAhStatus(newWorks, ahItems) {
+// 比對策略一：標題精確包含 OR Jaccard詞集 ≥0.7，年份容差 1 年
+// 比對策略二（DOI）：標題比對失敗且有 DOI 時，抓 AH 論著詳細頁確認 DOI
+async function annotateAhStatus(newWorks, ahItems) {
   const ahNorm = ahItems.map(item => ({
     ...item,
     norm: normalizeTitle(item.title),
     year: (item.date || '').substring(0, 4),
+    _matched: false,
   }));
-  return newWorks.map(work => {
+
+  // 第一階段：標題比對
+  const result = newWorks.map(work => {
     const wNorm = normalizeTitle(work.title);
     const wYear = work.year || '';
     const matched = ahNorm.find(ah => {
@@ -664,6 +679,39 @@ function annotateAhStatus(newWorks, ahItems) {
       if (!exactHit && !fuzzyHit) return false;
       if (wYear && ah.year && Math.abs(parseInt(wYear) - parseInt(ah.year)) > 1) return false;
       return true;
+    });
+    if (matched) matched._matched = true;
+    return { ...work, alreadyInAh: !!matched };
+  });
+
+  // 第二階段：DOI 比對（標題失敗且 ORCID 著作有 DOI 時才執行）
+  const normDoi = doi => (doi || '').toLowerCase().replace(/^https?:\/\/doi\.org\//i, '').replace(/[.,;:]+$/, '');
+  const unmatchedWithDoi = result.filter(w => !w.alreadyInAh && w.doi);
+  if (unmatchedWithDoi.length === 0) return result;
+
+  const relevantYears = new Set(unmatchedWithDoi.flatMap(w => {
+    const y = parseInt(w.year || '0');
+    return y ? [String(y - 1), String(y), String(y + 1)] : [];
+  }));
+
+  // 尚未被標題比對到、且年份在範圍內的 AH 論著
+  const candidates = ahNorm.filter(ah => !ah._matched && (!ah.year || relevantYears.has(ah.year)));
+  if (candidates.length === 0) return result;
+
+  // 批次抓 AH 論著 DOI（最多 50 筆，每筆間隔 300ms）
+  const doiMap = new Map(); // itemId → normalizedDoi
+  for (const ah of candidates.slice(0, 50)) {
+    await new Promise(r => setTimeout(r, 300));
+    const doi = await fetchAhItemDoi(ah.itemId);
+    if (doi) doiMap.set(ah.itemId, normDoi(doi));
+  }
+
+  return result.map(work => {
+    if (work.alreadyInAh || !work.doi) return work;
+    const wDoi = normDoi(work.doi);
+    const matched = candidates.find(ah => {
+      const ahDoi = doiMap.get(ah.itemId);
+      return ahDoi && ahDoi === wDoi;
     });
     return { ...work, alreadyInAh: !!matched };
   });
