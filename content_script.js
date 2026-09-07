@@ -392,6 +392,20 @@ window.addEventListener('nccu_clearHighlight', () => {
   chrome.storage.local.remove(['pendingFillData', 'filledPhase']);
 });
 
+window.addEventListener('nccu_clearFill', () => {
+  document.querySelectorAll('[data-ai-highlighted="true"]').forEach(el => {
+    if (el.tagName === 'SELECT') {
+      el.selectedIndex = 0;
+    } else {
+      el.value = '';
+    }
+    el.style.backgroundColor = '';
+    el.style.outline = '';
+    el.dataset.aiHighlighted = '';
+  });
+  chrome.storage.local.remove(['pendingFillData', 'filledPhase']);
+});
+
 
 // ── 第二層自動填入（支援全頁跳轉、iframe 跳轉、AJAX 換頁）─
 let _autoFillDone = false;

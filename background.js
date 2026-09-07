@@ -175,9 +175,23 @@ chrome.notifications.onClicked.addListener(() => {
 });
 
 async function checkOrcidWorks() {
-  const { orcidId, scholarId, orcidKnown = [] } =
-    await chrome.storage.local.get(['orcidId', 'scholarId', 'orcidKnown']);
+  let { orcidId, scholarId, orcidKnown = [], savedEmpId } =
+    await chrome.storage.local.get(['orcidId', 'scholarId', 'orcidKnown', 'savedEmpId']);
   if (!orcidId) return;
+
+  // scholarId 遺失時從 scholar_lookup.json 補回
+  if (!scholarId) {
+    const sl = await getScholarLookup().catch(() => ({}));
+    if (savedEmpId && sl[savedEmpId]?.scholarId) {
+      // 有員工編號：直接查
+      scholarId = sl[savedEmpId].scholarId;
+    } else if (orcidId) {
+      // 沒有員工編號：用 ORCID 反查
+      const match = Object.values(sl).find(v => v.orcid === orcidId);
+      if (match?.scholarId) scholarId = match.scholarId;
+    }
+    if (scholarId) await chrome.storage.local.set({ scholarId });
+  }
 
   const works = await fetchOrcidWorks(orcidId);
   if (!works) return;
@@ -225,6 +239,7 @@ async function fetchOrcidWorks(orcidId) {
       if (!s) return null;
       const extIds = s['external-ids']?.['external-id'] || [];
       const findId = type => extIds.find(id => id['external-id-type'] === type)?.['external-id-value'] || null;
+      const uri = findId('uri') || findId('source-work-url') || null;
       return {
         putCode: s['put-code'],
         title:   s.title?.title?.value || '（無標題）',
@@ -232,6 +247,7 @@ async function fetchOrcidWorks(orcidId) {
         doi:     findId('doi'),
         pmid:    findId('pmid'),
         arxivId: findId('arxiv'),
+        uri,
       };
     }).filter(Boolean);
   } catch {
@@ -293,7 +309,7 @@ async function fetchOrcidWorkText(orcidId, putCode) {
   const abstract = w['short-description'] || '';
   if (abstract) lines.push(`摘要：${abstract}`);
 
-  // 沒有任何外部 ID → 試標題搜尋找 DOI
+  // 試標題搜尋找 DOI
   if (title) {
     const firstAuthor = authors[0] || '';
     const doi = await searchDoiByTitle(title, firstAuthor, year);
@@ -303,6 +319,23 @@ async function fetchOrcidWorkText(orcidId, putCode) {
         return { ...full, title: full.title || title, journal: full.journal || journal, year: full.year || year };
       } catch { /* fallback */ }
     }
+  }
+
+  // 最後備援：抓 ORCID 記錄的著作頁面 URL，擷取 meta tag
+  const workUrl = w['url']?.value
+    || (w['external-ids']?.['external-id'] || [])
+        .find(id => ['uri','source-work-url'].includes(id['external-id-type']))
+        ?.['external-id-value'];
+  if (workUrl) {
+    try {
+      const htmlMeta = await fetchMetaFromHtml(workUrl);
+      if (htmlMeta.doi) {
+        const full = await fetchMetadataOnly(htmlMeta.doi);
+        return { ...full, title: full.title || title, journal: full.journal || journal, year: full.year || year };
+      }
+      if (htmlMeta.abstract && !abstract) lines.push(`摘要：${htmlMeta.abstract}`);
+      lines.push(`URL: ${workUrl}`);
+    } catch { /* 忽略 */ }
   }
 
   return {
@@ -639,6 +672,16 @@ function annotateAhStatus(newWorks, ahItems) {
 
 // 監聽來自 popup.js 的訊息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+
+  // ORCID 反查 scholarId（無員工編號時使用）
+  if (message.action === 'lookupScholarIdByOrcid') {
+    (async () => {
+      const sl = await getScholarLookup().catch(() => ({}));
+      const match = Object.values(sl).find(v => v.orcid === message.orcid);
+      sendResponse(match ? { scholarId: match.scholarId } : {});
+    })();
+    return true;
+  }
 
   // 員工編號查 ORCID + scholarId（scholar_lookup 優先，再查 employee_orcid.json，最後查自訂對應表）
   if (message.action === 'lookupOrcidByEmpId') {
