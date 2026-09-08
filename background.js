@@ -1097,17 +1097,21 @@ async function fetchMetadataOnly(doi) {
     if (work.page === '1-1') delete work.page;  // 封面頁的假頁碼
   }
 
-  // 主要來源均無摘要時，試從出版商 HTML 頁面抓 meta tag
+  // ② ③ 並行：補摘要 + 預查期刊網址
+  // ③ 提前在 Stage 1 完成，Stage 2 送 OpenAI 時 _journal_url 已在文字中，不需再等
   const hasAbstractNow = !!(work.abstract || openAlexData?.abstract_inverted_index || s2Data?.abstract);
-  let extraAbstract = '';
-  if (!hasAbstractNow) {
-    const htmlUrl = unpaywallData?.best_oa_location?.url_for_landing_page
-                 || unpaywallData?.best_oa_location?.url
-                 || `https://doi.org/${cleanDoi}`;
-    extraAbstract = await fetchAbstractFromHtml(htmlUrl);
-  }
+  const htmlUrl = unpaywallData?.best_oa_location?.url_for_landing_page
+               || unpaywallData?.best_oa_location?.url
+               || `https://doi.org/${cleanDoi}`;
+  const [extraAbstract, preJournalUrl] = await Promise.all([
+    hasAbstractNow ? Promise.resolve('') : fetchAbstractFromHtml(htmlUrl),
+    fetchJournalUrlFromOpenAlex(work['container-title']?.[0] || ''),
+  ]);
 
-  const formattedText = formatCrossrefData(work, cleanDoi, openAlexData, s2Data, unpaywallData, inDblp, orcidDepts, extraAbstract, taiwanJournals);
+  let formattedText = formatCrossrefData(work, cleanDoi, openAlexData, s2Data, unpaywallData, inDblp, orcidDepts, extraAbstract, taiwanJournals);
+  if (preJournalUrl && !/^_journal_url:/m.test(formattedText)) {
+    formattedText = `_journal_url: ${preJournalUrl}\n` + formattedText;
+  }
 
   const dateParts = work['published-print']?.['date-parts']?.[0]
     || work['published-online']?.['date-parts']?.[0]
