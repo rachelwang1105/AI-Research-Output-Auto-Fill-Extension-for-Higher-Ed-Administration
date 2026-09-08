@@ -634,15 +634,6 @@ function normalizeTitle(title) {
     .replace(/[：:，,、。.．「」『』（）()\[\]{}\-—_/\\]/g, '');
 }
 
-// 詞集 Jaccard 相似度（threshold = 0.7）
-function jaccardMatch(a, b) {
-  const wa = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-  const wb = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-  if (!wa.size || !wb.size) return false;
-  const inter = [...wa].filter(w => wb.has(w)).length;
-  const union = new Set([...wa, ...wb]).size;
-  return inter / union >= 0.7;
-}
 
 // Session-level DOI cache：避免同一 itemId 在同次 checkOrcidWorks 中重複抓頁
 const _ahDoiCache = new Map();
@@ -662,7 +653,7 @@ async function fetchAhItemDoi(itemId) {
 }
 
 // 用 AH 清單標記「是否已建檔」，不過濾，只加 alreadyInAh 欄位
-// 比對策略一：標題精確包含 OR Jaccard詞集 ≥0.7，年份容差 1 年
+// 比對策略一：標準化標題精確包含（含子字串），年份容差 1 年
 // 比對策略二（DOI）：標題比對失敗且有 DOI 時，抓 AH 論著詳細頁確認 DOI
 async function annotateAhStatus(newWorks, ahItems) {
   const ahNorm = ahItems.map(item => ({
@@ -681,8 +672,7 @@ async function annotateAhStatus(newWorks, ahItems) {
       const exactHit = ah.norm === wNorm
         || (wNorm.length > 10 && ah.norm.includes(wNorm))
         || (ah.norm.length > 10 && wNorm.includes(ah.norm));
-      const fuzzyHit = !exactHit && jaccardMatch(work.title, ah.title);
-      if (!exactHit && !fuzzyHit) return false;
+      if (!exactHit) return false;
       if (wYear && ah.year && Math.abs(parseInt(wYear) - parseInt(ah.year)) > 1) return false;
       return true;
     });
