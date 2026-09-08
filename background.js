@@ -615,7 +615,7 @@ async function fetchAhExistingItems(scholarId) {
     if (first.length < 100) return first;
     const all = [...first];
     for (let page = 1; page <= 20; page++) {
-      await new Promise(r => setTimeout(r, 600)); // 每頁間隔 600ms
+      await new Promise(r => setTimeout(r, 400)); // 每頁間隔 400ms
       const more = await fetchAhPage(scholarId, page);
       all.push(...more);
       if (more.length < 100) break;
@@ -644,15 +644,21 @@ function jaccardMatch(a, b) {
   return inter / union >= 0.7;
 }
 
+// Session-level DOI cache：避免同一 itemId 在同次 checkOrcidWorks 中重複抓頁
+const _ahDoiCache = new Map();
+
 // 從 AH 論著詳細頁面擷取 DOI（純 regex，不需 DOM）
 async function fetchAhItemDoi(itemId) {
+  if (_ahDoiCache.has(itemId)) return _ahDoiCache.get(itemId);
   try {
     const res = await fetch(`https://ah.lib.nccu.edu.tw/item?id=${itemId}`, { headers: { Accept: 'text/html' } });
-    if (!res.ok) return null;
+    if (!res.ok) { _ahDoiCache.set(itemId, null); return null; }
     const html = await res.text();
     const m = html.match(/\b(10\.\d{4,}\/[^\s"'<>\]]+)/i);
-    return m ? m[1].replace(/[.,;:]+$/, '').toLowerCase() : null;
-  } catch { return null; }
+    const doi = m ? m[1].replace(/[.,;:]+$/, '').toLowerCase() : null;
+    _ahDoiCache.set(itemId, doi);
+    return doi;
+  } catch { _ahDoiCache.set(itemId, null); return null; }
 }
 
 // 用 AH 清單標記「是否已建檔」，不過濾，只加 alreadyInAh 欄位
@@ -698,12 +704,18 @@ async function annotateAhStatus(newWorks, ahItems) {
   const candidates = ahNorm.filter(ah => !ah._matched && (!ah.year || relevantYears.has(ah.year)));
   if (candidates.length === 0) return result;
 
-  // 批次抓 AH 論著 DOI（最多 50 筆，每筆間隔 300ms）
+  // 並行抓 AH 論著 DOI（最多 30 筆，5 筆一組，組間 150ms；提早退出）
   const doiMap = new Map(); // itemId → normalizedDoi
-  for (const ah of candidates.slice(0, 50)) {
-    await new Promise(r => setTimeout(r, 300));
-    const doi = await fetchAhItemDoi(ah.itemId);
-    if (doi) doiMap.set(ah.itemId, normDoi(doi));
+  const targetDois = new Set(unmatchedWithDoi.map(w => normDoi(w.doi)));
+  const capped = candidates.slice(0, 30);
+  const CONCURRENCY = 5;
+  for (let i = 0; i < capped.length; i += CONCURRENCY) {
+    const chunk = capped.slice(i, i + CONCURRENCY);
+    const dois = await Promise.all(chunk.map(ah => fetchAhItemDoi(ah.itemId)));
+    dois.forEach((doi, j) => { if (doi) doiMap.set(chunk[j].itemId, normDoi(doi)); });
+    // 若所有目標 DOI 都已找到，提早結束
+    if ([...targetDois].every(d => [...doiMap.values()].includes(d))) break;
+    if (i + CONCURRENCY < capped.length) await new Promise(r => setTimeout(r, 150));
   }
 
   return result.map(work => {
