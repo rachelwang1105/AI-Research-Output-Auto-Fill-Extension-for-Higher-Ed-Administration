@@ -2062,7 +2062,9 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
     const doi = rawDoi.replace(/^https?:\/\/doi\.org\//i, '').match(/10\.\d{4,}\/\S+/)?.[0] || '';
 
     // 摘要 Level 1：標準 meta tag（最短 50 字元）
+    // citation_abstract / DC.description 優先；og:description / description 常被截斷（SEO 用），放後面
     let abstract = getMeta(50, 'citation_abstract', 'DC.description', 'dc.description', 'og:description', 'description');
+    const _level1Truncated = /[.…]{3}\s*$/.test(abstract); // og:description 截斷標記
 
     // Level 1 後處理：若為 Highlights 開頭，嘗試截取 "Abstract" 後半；若無則清空讓後續 Level 嘗試
     if (abstract && /^highlights?\b/i.test(abstract)) {
@@ -2071,6 +2073,8 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
     }
     // AH 平台樣板（非論著摘要）：過濾掉
     if (/NCCU\s+Academic\s+Hub|academic\s+output\s+collection|政大學術集成/i.test(abstract)) abstract = '';
+    // Level 1 截斷（以 ... 結尾）：繼續往下找完整版，找到才取代
+    if (_level1Truncated) abstract = '';
 
     // 摘要 Level 2a：class/id 含 "abstract(s)" 的元素（跳過含 "highlight" 的元素）
     if (!abstract) {
@@ -2139,6 +2143,11 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
           if (typeof desc === 'string' && desc.length >= 50) { abstract = desc; break; }
         } catch {}
       }
+    }
+
+    // Level 1 截斷備援：Level 2-4 都找不到時，回頭用截斷版（總比空白好）
+    if (!abstract && _level1Truncated) {
+      abstract = getMeta(50, 'og:description', 'description');
     }
 
     // HTML entity decode & HTML tag strip for all sources
