@@ -2077,7 +2077,7 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
       const bodyRe = /<(div|section|p)([^>]*)>([\s\S]{50,4000}?)<\/(?:div|section|p)>/gi;
       for (const m of html.matchAll(bodyRe)) {
         const attrs = m[2];
-        if (!/(?:class|id)=["'][^"']*\babstracts?\b/i.test(attrs)) continue;
+        if (!/(?:class|id)=["'][^"']*\b(?:abstracts?|abstract-content|abstract-text|摘要)\b/i.test(attrs)) continue;
         if (/(?:class|id)=["'][^"']*\bhighlights?\b/i.test(attrs)) continue;
         const stripped = m[3].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         if (stripped.length >= 50 && !/^highlights?\b/i.test(stripped)) {
@@ -2087,10 +2087,10 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
       }
     }
 
-    // 摘要 Level 2b：找 "Abstract" 標題後的內文（ScienceDirect sp0105 等無語意 id 的情況）
+    // 摘要 Level 2b：找 "Abstract / 摘要 / 要旨" 標題後的內文
     if (!abstract) {
       const headingMatch = html.match(
-        /<(?:h[1-6]|strong|b)[^>]*>\s*Abstract\s*<\/(?:h[1-6]|strong|b)>\s*([\s\S]{50,4000}?)(?=<h[1-6][\s>]|<section[\s>]|<\/article|<footer[\s>])/i
+        /<(?:h[1-6]|strong|b)[^>]*>\s*(?:Abstract|摘要|要旨)\s*<\/(?:h[1-6]|strong|b)>\s*([\s\S]{50,4000}?)(?=<h[1-6][\s>]|<section[\s>]|<\/article|<footer[\s>])/i
       );
       if (headingMatch) {
         const stripped = headingMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -2146,7 +2146,7 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
       abstract = abstract
         .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
         .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
-        .replace(/^Abstract\s+/i, '')  // 去掉 div 內標題留下的 "Abstract " 前綴
+        .replace(/^(?:Abstract|摘要|要旨)\s*/i, '')  // 去掉 div 內標題留下的前綴
         .trim();
     }
 
