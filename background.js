@@ -1,6 +1,6 @@
 ﻿// background.js
 // 負責：接收 popup 的指令、查詢 CrossRef API、呼叫 OpenAI API、把結果傳回去
-importScripts('config.js'); // API key (_AK) 由 config.js 提供，不進版控
+import './config.js'; // API key (self._AK) 由 config.js 提供，不進版控
 
 const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理政治大學論著目錄系統的資料填寫。
 請根據輸入的書目資訊，輸出一個符合以下規格的 JSON 物件。
@@ -54,8 +54,8 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - doi: 數位物件識別碼，只填 DOI 號碼本身（不含 https://doi.org/），若無則留空字串
 - _oa_url: 若輸入中有 open-access-url，直接複製其值；否則填空字串
 
-期刊論文專用欄位（publ_tpe 為 03 時才填）：
-**警告：publ_tpe 不是 "03" 時，以下欄位全部填空字串 ""，絕對不可填入會議名稱或任何非空值：acc_flg, jnl_nam, vol, no, nat_tpe, nat_cod, pertpe_cod, publ_type, url_addr**
+期刊論文專用欄位（publ_tpe 為 03 時才填，其他類別省略不輸出）：
+**警告：publ_tpe 不是 "03" 時，以下欄位全部省略不輸出，程式端會自動補入預設值，絕對不可填入會議名稱或任何非空值：acc_flg, jnl_nam, vol, no, nat_tpe, nat_cod, pertpe_cod, publ_type, url_addr**
 - acc_flg: **完全由輸入 JSON 的 key 決定，禁止語意推斷**：查輸入 JSON 是否同時存在 "volume"、"issue"、"page" 三個 key 且值均非空字串——若三者全部存在且非空 → 填 "0"；否則（任一 key 不存在，或值為空字串/null）→ 一律填 "1"。published-online、published-print、issued 等日期欄位對此判斷完全無影響。
 - jnl_nam: 期刊名稱（只填學術期刊名，不可填會議名稱）
 - vol: 卷別
@@ -69,7 +69,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - publ_type: 出版形式："0"=紙本期刊, "1"=電子期刊, "2"=紙本及電子。判斷方式：若輸入 JSON 有 "issn-type" 欄位，檢查其陣列中是否同時含 type="print" 與 type="electronic" → 填 "2"；只含 type="electronic" → 填 "1"；只含 type="print" → 填 "0"；若無 "issn-type" 欄位或陣列為空 → 預設填 "2"
 - url_addr: 文章或期刊的網址。優先順序：①若輸入有 URL 欄位，直接複製該 URL（完整連結，包含路徑，DOI 連結、資料庫永久連結、開放取用頁面均可）；②否則若輸入有 _journal_url，直接複製其值；③以上皆無則填空字串 ""
 
-書籍專用欄位（publ_tpe 為 01 或 02 時才填，其他類別留空字串）：
+書籍專用欄位（publ_tpe 為 01 或 02 時才填，其他類別省略不輸出）：
 - publ_type: 出版形式："0"=紙本, "1"=電子書, "2"=其他
 - bktpe_cod: 作者類別："1"=自著者, "2"=翻譯者, "3"=編著者
 - bkcat_tpe: 專書性質："0"=學術性, "1"=教科書, "2"=其他
@@ -81,8 +81,8 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - publ_rem: 出版形式選其他的補充說明，通常留空字串
 - page_num: 起迄頁次，如 "45-67"（僅 publ_tpe=02 專書篇章才填，來自 Pages: 欄位；其他留空字串）
 
-會議論文專用欄位（publ_tpe 為 04 時才填）：
-**警告：publ_tpe 不是 "04" 時，以下欄位全部填空字串 ""。publ_tpe 是 "04" 時，以下欄位必須全部出現在輸出 JSON 中（即使是空字串）。**
+會議論文專用欄位（publ_tpe 為 04 時才填，其他類別省略不輸出）：
+**publ_tpe 是 "04" 時，以下欄位必須全部出現在輸出 JSON 中（即使是空字串）；其他類別省略不輸出，程式端會自動補入預設值。**
 重要：輸入 JSON 中凡有 _conf_* 開頭的欄位，均為已預先格式化好的值，**必須直接採用**，不得忽略或改寫。
 - conf_nam: 會議名稱。**優先用 _conf_nam；若無，從 container-title 欄位取值**（container-title 就是論文集/會議全名）
 - conf_dt: 會議日期（格式：2012/07/01-2012/07/02）。**若有 _conf_dt，直接使用其值**
@@ -98,7 +98,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - citetpe_rem: 收錄資料庫其他說明，若無則留空字串
 - isbn_num: 論文集 ISBN 號碼。**若輸入中有 ISBN 欄位，直接使用其值**；若無則留空字串
 
-研究報告專用欄位（publ_tpe 為 05 時才填，其他類別留空字串）：
+研究報告專用欄位（publ_tpe 為 05 時才填，其他類別省略不輸出）：
 - prj_nam: 計畫名稱
 - repo_num: 研究計畫編號，若無則留空字串
 - period: 研究計畫起迄時間，請輸入完整時間格式，例如 2010/07/01-2011/08/01，若無則留空字串
@@ -106,7 +106,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - lead_tpe: 是否為計畫主持人："Y"=是, "N"=否
 - budget: 研究經費金額（數字，新台幣元），若不明則填 "0"
 
-展演專用欄位（publ_tpe 為 06 時才填，其他類別留空字串）：
+展演專用欄位（publ_tpe 為 06 時才填，其他類別省略不輸出）：
 **若輸入有 Event: 欄位，格式通常為「活動名稱, 日期」（如「東吳大學劉光義教授紀念專題講座, 2026.05.15」）：逗號前為 conf_nam，逗號後的日期轉換為 conf_dt（2026.05.15 → 2026/05/15-2026/05/15；若有區間則對應起迄）**
 - conf_nam: 展演名稱
 - conf_dt: 展演起迄時間，格式為 "YYYY/MM/DD-YYYY/MM/DD"，如 "2024/03/01-2024/03/31"，若無則留空字串
@@ -117,21 +117,21 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - adm_nam: 負責人姓名，若無則留空字串
 - mbr_cnt: 大約參與人數（數字），若不明則填 "0"
 
-學術資料庫專用欄位（publ_tpe 為 08 時才填，其他類別留空字串）：
+學術資料庫專用欄位（publ_tpe 為 08 時才填，其他類別省略不輸出）：
 - cont_info: 目前資料量說明（如筆數、規模），若無則留空字串
 - ann_flg: 是否開放："1"=是（開放），"0"=否（不開放）
 - db_url: 資料庫網址，若無則留空字串
 
-個案專用欄位（publ_tpe 為 09 時才填，其他類別留空字串）：
+個案專用欄位（publ_tpe 為 09 時才填，其他類別省略不輸出）：
 - publ_ut: 發行單位名稱，若無則留空字串
 - case_num: 產品編號，若無則留空字串
 
-其他專用欄位（publ_tpe 為 10 時才填，其他類別留空字串）：
+其他專用欄位（publ_tpe 為 10 時才填，其他類別省略不輸出）：
 - ramtyp_cod: 著作型態，從以下選最符合的值：01=書評, 02=短論, 03=訪談, 04=注釋, 05=創作, 06=Working Paper, 99=其他
 - publ_ut: 發行單位名稱，若無則留空字串
 - ram_memo: 備注說明，若無則留空字串
 
-學術交流專用欄位（publ_tpe 為 12 時才填，其他類別留空字串）：
+學術交流專用欄位（publ_tpe 為 12 時才填，其他類別省略不輸出）：
 **若輸入有 Event: 欄位，格式通常為「活動名稱, 日期」：逗號前為 conf_nam，逗號後的日期轉換為 conf_dt（2026.05.15 → 2026/05/15-2026/05/15）**
 - conf_tpe: 學術交流種類："1"=演講（境內外學校或機構舉辦，短期3個月內學術專題演講，不含校內自辦）, "2"=研習活動（境內外學校或機構舉辦，短期3個月內學術研習，不含校內自辦）, "3"=講學（非屬演講或研習之境內外教育交流活動，不含校內自辦）
 - conf_nam: 活動名稱
@@ -891,6 +891,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // PDF URL → 背景下載 → 二進制掃描 DOI；失敗時以 PDF.js 備援
+  if (message.action === 'fetchPdfDoi') {
+    (async () => {
+      try {
+        const res = await fetch(message.url, {
+          headers: { Accept: 'application/pdf,*/*' },
+          redirect: 'follow',
+        });
+        if (!res.ok) throw new Error(`無法下載 PDF（HTTP ${res.status}）`);
+        const buffer = await res.arrayBuffer();
+        const raw = new TextDecoder('latin1').decode(buffer);
+        const m = raw.match(/10\.\d{4,}\/[^\s\x00-\x1f"'<>\[\]{}\\,]{4,}/);
+        if (!m) {
+          const fallback = extractFromPdfFallback(buffer);
+          if (!fallback.success) {
+            const reason = '未在 PDF 中找到 DOI，且無法從 metadata 擷取書目資訊';
+            sendResponse({ success: false, error: reason });
+            return;
+          }
+          let rawText = `Title: ${fallback.title}`;
+          if (fallback.author) rawText += `\nAuthor: ${fallback.author}`;
+          const formattedText = await enrichPublicationText(rawText);
+          const title = (fallback.title || formattedText.match(/^Title: (.+)$/m)?.[1] || '（PDF 全文）').substring(0, 80);
+          sendResponse({ success: true, fallbackText: true, title, formattedText });
+          return;
+        }
+        const doi = m[0].replace(/[.,;:\]}>]+$/, '').toLowerCase();
+        sendResponse({ success: true, doi });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  // PDF 擷取後文字前處理（TSSCI/THCI 查詢，popup 端 PDF.js 擷取完後呼叫）
+  if (message.action === 'enrichText') {
+    enrichPublicationText(message.text)
+      .then(enriched => sendResponse({ success: true, formattedText: enriched }))
+      .catch(err    => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   // 純文字模式：直接把貼上的文字送 OpenAI
   if (message.action === 'processPublicationText') {
     if (!message.text?.trim()) {
@@ -1147,10 +1190,8 @@ async function fetchJournalUrlFromOpenAlex(journalName) {
 }
 
 // OpenAI 呼叫（純文字模式與 DOI 確認後共用）
-// _AK 由 importScripts('config.js') 載入
-
 async function callOpenAI(text) {
-  const apiKey = _AK;
+  const apiKey = self._AK;
 
   // 若文字中無 _journal_url，試用期刊名查 OpenAlex 補上
   if (!/^_journal_url:/m.test(text)) {
@@ -1170,7 +1211,7 @@ async function callOpenAI(text) {
       'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: 'gpt-5.6-sol',
+      model: 'gpt-5.4-nano',
       max_completion_tokens: 4000,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -1472,6 +1513,45 @@ async function fetchOrcidDeptsByDoi(doi, authorObjs) {
     }));
     return depts;
   } catch { return {}; }
+}
+
+// ── PDF metadata 二進制擷取備援（DOI 掃描失敗時呼叫，不需要 PDF.js）──
+// 支援：Info 字典 ASCII 編碼、UTF-16BE hex 字串、XMP XML metadata
+function extractFromPdfFallback(arrayBuffer) {
+  const raw = new TextDecoder('latin1').decode(arrayBuffer);
+  let title = null;
+  let author = null;
+
+  // 1. XMP metadata（現代 PDF 最常見）
+  const xmpTitle = raw.match(/<dc:title>[\s\S]{0,300}?<rdf:li[^>]*>([^<]{5,})<\/rdf:li>/);
+  if (xmpTitle) title = xmpTitle[1].trim();
+
+  const xmpCreator = raw.match(/<dc:creator>[\s\S]{0,600}?<rdf:li[^>]*>([^<]{2,})<\/rdf:li>/);
+  if (xmpCreator) author = xmpCreator[1].trim();
+
+  // 2. Info 字典 — ASCII 編碼 /Title (...)
+  if (!title) {
+    const m = raw.match(/\/Title\s*\(([^)]{5,})\)/);
+    if (m) title = m[1].replace(/\\n|\\r|\\t/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  if (!author) {
+    const m = raw.match(/\/Author\s*\(([^)]+)\)/);
+    if (m) author = m[1].trim();
+  }
+
+  // 3. Info 字典 — UTF-16BE hex 字串 /Title <FEFF...>
+  if (!title) {
+    const m = raw.match(/\/Title\s*<(FEFF[0-9A-Fa-f]{8,})>/i);
+    if (m) {
+      try {
+        const bytes = new Uint8Array(m[1].match(/../g).map(h => parseInt(h, 16)));
+        title = new TextDecoder('utf-16be').decode(bytes.slice(2)).replace(/\s+/g, ' ').trim();
+      } catch {}
+    }
+  }
+
+  if (!title) return { success: false, reason: 'no-extractable-metadata' };
+  return { success: true, source: 'pdf-metadata', title, author };
 }
 
 // ── TSSCI / THCI 靜態清單（懶載入，快取）────────────────
@@ -2143,11 +2223,6 @@ async function fetchMetaFromHtml(url, _depth = 0, _returnHtml = false) {
           if (typeof desc === 'string' && desc.length >= 50) { abstract = desc; break; }
         } catch {}
       }
-    }
-
-    // Level 1 截斷備援：Level 2-4 都找不到時，回頭用截斷版（總比空白好）
-    if (!abstract && _level1Truncated) {
-      abstract = getMeta(50, 'og:description', 'description');
     }
 
     // HTML entity decode & HTML tag strip for all sources

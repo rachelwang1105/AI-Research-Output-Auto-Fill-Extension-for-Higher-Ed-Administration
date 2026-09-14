@@ -654,6 +654,10 @@
     <button class="btn-primary" id="btnAddPageMeta"
             style="margin-top:0; padding:7px; font-size:12px;">加入此頁面書目到佇列</button>
   </div>
+  <div id="pagePdfAction" class="hidden">
+    <button class="btn-primary" id="btnParsePdfTab"
+            style="margin-top:0; padding:7px; font-size:12px;">解析此 PDF 並加入佇列</button>
+  </div>
 
   <!-- 進度步驟 -->
   <div class="progress-steps" id="progressSteps">
@@ -693,8 +697,8 @@
       <div class="input-hint">貼上後加入待處理佇列；AI 解析在處理時才執行，不立即消耗</div>
       <div style="display:flex;align-items:center;gap:6px;margin-top:8px;">
         <span style="font-size:10px;color:var(--muted);flex-shrink:0;">或</span>
-        <button class="btn-sm" id="btnImportFile" style="flex:1;text-align:center;">匯入 RIS / BibTeX / ENW 檔案</button>
-        <input type="file" id="fileImport" accept=".ris,.bib,.enw,.txt" class="hidden">
+        <button class="btn-sm" id="btnImportFile" style="flex:1;text-align:center;">匯入 RIS / BibTeX / ENW / PDF 檔案</button>
+        <input type="file" id="fileImport" accept=".ris,.bib,.enw,.txt,.pdf" class="hidden">
       </div>
     </div>
 
@@ -719,7 +723,6 @@
         <div class="key-row">
           <input type="text" id="orcidInput" placeholder="0000-0001-2345-6789"
             style="font-family:'Courier New',monospace;" />
-          <button class="btn-sm" id="btnSaveOrcid">儲存</button>
         </div>
         <div id="orcidStatus" class="status-hint">尚未設定</div>
         <button class="btn-sm" id="btnCheckOrcid"
