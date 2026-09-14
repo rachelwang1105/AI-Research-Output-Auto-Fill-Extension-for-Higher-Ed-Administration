@@ -89,7 +89,9 @@ function fillFirstLayer(data) {
   _fillQuiet = false; // 第一層需要 change 事件（publ_tpe 等 UI 連動）
   setText  ('title1',       data.title1);
   setText  ('publ_dt',      data.publ_dt,        true);
+  _fillQuiet = true;  // field_cod change 觸發 ASP.NET postback 造成 ViewData 型別錯誤
   setSelect('field_cod',    data.field_cod);
+  _fillQuiet = false;
   setSelect('publ_tpe',     data.publ_tpe);
   setText  ('publ_txt',     data.publ_txt,       true);
   setSelect('lang_cod',     data.lang_cod,       true);

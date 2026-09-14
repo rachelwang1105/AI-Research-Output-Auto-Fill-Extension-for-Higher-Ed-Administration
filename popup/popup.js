@@ -41,7 +41,6 @@ const empInput         = document.getElementById('empInput');
 const btnLookupOrcid   = document.getElementById('btnLookupOrcid');
 const empStatus        = document.getElementById('empStatus');
 const orcidInput       = document.getElementById('orcidInput');
-const btnSaveOrcid     = document.getElementById('btnSaveOrcid');
 const orcidStatus      = document.getElementById('orcidStatus');
 const btnCheckOrcid    = document.getElementById('btnCheckOrcid');
 const tabQueue          = document.getElementById('tabQueue');
@@ -61,6 +60,8 @@ const btnStartQueue     = document.getElementById('btnStartQueue');
 const btnNextQueue      = document.getElementById('btnNextQueue');
 const fileImport        = document.getElementById('fileImport');
 const btnImportFile     = document.getElementById('btnImportFile');
+const pagePdfAction     = document.getElementById('pagePdfAction');
+const btnParsePdfTab    = document.getElementById('btnParsePdfTab');
 const pageMetaAction    = document.getElementById('pageMetaAction');
 const btnAddPageMeta    = document.getElementById('btnAddPageMeta');
 
@@ -177,6 +178,11 @@ function checkCurrentPage() {
     if (isNccuPage) {
       pageStatus.className = 'page-status ok';
       pageStatusText.textContent = '已偵測到論著系統，可以開始填入';
+    } else if (/^https?:\/\/.+\.pdf(\?[^#]*)?($|#)/i.test(url)) {
+      pagePdfUrl = url;
+      pageStatus.className = 'page-status ok';
+      pageStatusText.textContent = '偵測到 PDF 頁面，可直接解析書目';
+      show(pagePdfAction);
     } else {
       // 嘗試從當前頁面抓 DOI
       detectDoiFromPage(tabs[0].id);
@@ -848,6 +854,215 @@ function detectInputType(raw) {
 }
 
 
+// ── PDF 解析（Phase 1：二進制掃描 DOI）──────────────────
+
+let pagePdfUrl = '';
+
+function extractDoiFromPdfBuffer(buffer) {
+  const raw = new TextDecoder('latin1').decode(buffer);
+  const m = raw.match(/10\.\d{4,}\/[^\s\x00-\x1f"'<>()\[\]{}\\,]{4,}/);
+  if (!m) return null;
+  return m[0].replace(/[.,;:)\]}>]+$/, '').toLowerCase();
+}
+
+async function enqueuePdfDoi(doi, feedbackEl) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ action: 'fetchMetadata', doi }, async (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        const msg = response?.error || chrome.runtime.lastError?.message || '未知錯誤';
+        alert('查詢失敗：' + msg);
+        reject(new Error(msg));
+        return;
+      }
+      const meta = response.data;
+      const { orcidQueue = [] } = await chrome.storage.local.get('orcidQueue');
+      await chrome.storage.local.set({
+        orcidQueue: [...orcidQueue, {
+          identifierType:  'doi',
+          identifierValue: doi,
+          title:       meta.title || doi,
+          journal:     meta.journal || '',
+          year:        meta.year || '',
+          hasAbstract: meta.hasAbstract,
+          authorCount: meta.authorCount,
+          formattedText: meta.formattedText,
+        }]
+      });
+      await renderPendingQueue();
+      if (feedbackEl) {
+        feedbackEl.textContent = `✓ 已加入佇列（DOI: ${doi}）`;
+        setTimeout(() => { feedbackEl.textContent = feedbackEl.dataset.defaultText || ''; }, 3000);
+      }
+      resolve(meta);
+    });
+  });
+}
+
+async function enqueuePdfText(title, formattedText, feedbackEl) {
+  const { orcidQueue = [] } = await chrome.storage.local.get('orcidQueue');
+  await chrome.storage.local.set({
+    orcidQueue: [...orcidQueue, {
+      identifierType: 'pdfText',
+      title:          title || '（PDF 全文）',
+      formattedText,
+    }]
+  });
+  await renderPendingQueue();
+  if (feedbackEl) {
+    feedbackEl.textContent = `✓ 已加入佇列（從 PDF 全文擷取）`;
+    setTimeout(() => { feedbackEl.textContent = feedbackEl.dataset.defaultText || ''; }, 3000);
+  }
+}
+
+// 偵測 PDF 文字層是否因字型編碼問題而損壞
+// 若非 ASCII / CJK / 常見標點的字元比例過高，視為亂碼
+function isPdfTextGarbled(text) {
+  let bad = 0, total = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (cp <= 0x20) continue;
+    total++;
+    const ok =
+      (cp >= 0x21  && cp <= 0x7E)   ||  // ASCII 可見字元
+      (cp >= 0x80  && cp <= 0x024F) ||  // Latin Extended
+      (cp >= 0x2000 && cp <= 0x206F) ||  // 通用標點
+      (cp >= 0x3000 && cp <= 0x9FFF) ||  // CJK、平假名、片假名
+      (cp >= 0xF900 && cp <= 0xFAFF) ||  // CJK 相容表意文字
+      (cp >= 0xFF00 && cp <= 0xFFEF);    // 全形字元
+    if (!ok) bad++;
+  }
+  return total > 10 && bad / total > 0.25;
+}
+
+// Popup 端 PDF.js 擷取（popup 頁面支援動態 import()，Service Worker 不支援）
+async function extractTextWithPdfJs(arrayBuffer) {
+  let pdfjsLib;
+  try {
+    pdfjsLib = await import(chrome.runtime.getURL('lib/pdf.mjs'));
+    pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.mjs');
+  } catch (err) {
+    return { success: false, error: '無法載入 PDF 解析器：' + err.message };
+  }
+  let pdf;
+  try {
+    pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  } catch (err) {
+    return { success: false, error: '無法解析 PDF' };
+  }
+  const meta = await pdf.getMetadata().catch(() => null);
+  const info = meta?.info || {};
+  if (info.Title?.trim().length > 5) {
+    return { success: true, source: 'pdf-metadata', title: info.Title.trim(), author: info.Author || null };
+  }
+  const numPages = Math.min(pdf.numPages, 2);
+  let allItems = [];
+  for (let p = 1; p <= numPages; p++) {
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    allItems = allItems.concat(tc.items);
+  }
+  const items = allItems;
+  const rawText = items.map(i => i.str).join(' ').trim();
+  if (rawText.length < 30) {
+    return { success: false, error: '此 PDF 可能為掃描圖片，無法擷取文字' };
+  }
+  // DOI 是 ASCII，就算中文字型損壞也通常保持可讀 → 優先掃描
+  // 注意：允許括號（如 10.6575/JILA.201912_(95).0005），但清理尾端雜訊
+  const doiInText = rawText.match(/10\.\d{4,}\/[^\s"'<>\[\]{}\\,]{4,}/);
+  if (doiInText) {
+    const doi = doiInText[0].replace(/[.,;:\]}>]+$/, '').toLowerCase();
+    return { success: true, source: 'doi-from-text', doi };
+  }
+  // 偵測字型編碼損壞（ToUnicode mapping 不完整的台灣學術期刊 PDF 常見問題）
+  if (isPdfTextGarbled(rawText)) {
+    return { success: false, error: 'PDF 文字層存在字型編碼問題，無法正確擷取文字。\n請改用「文字模式」手動貼入書目資料。' };
+  }
+  // 從前幾個文字物件推斷標題（通常是第一行最大字的文字）
+  const titleGuess = items.slice(0, 30).map(i => i.str).join(' ')
+    .replace(/\s+/g, ' ').trim().substring(0, 80);
+  return { success: true, source: 'pdf-text', rawText, titleGuess };
+}
+
+async function pdfExtractedToQueue(extracted, feedbackEl) {
+  const rawText = extracted.source === 'pdf-metadata'
+    ? `Title: ${extracted.title}${extracted.author ? '\nAuthor: ' + extracted.author : ''}`
+    : extracted.rawText;
+  const enriched = await new Promise(resolve =>
+    chrome.runtime.sendMessage({ action: 'enrichText', text: rawText }, resolve)
+  );
+  const formattedText = enriched?.success ? enriched.formattedText : rawText;
+  const title = (extracted.title || formattedText.match(/^Title: (.+)$/m)?.[1] || extracted.titleGuess || '（PDF 全文）').substring(0, 80);
+  await enqueuePdfText(title, formattedText, feedbackEl);
+}
+
+async function handlePdfBuffer(buffer, feedbackEl) {
+  const doi = extractDoiFromPdfBuffer(buffer);
+  if (!doi) {
+    if (feedbackEl) feedbackEl.textContent = '正在嘗試從 PDF 全文擷取書目資訊…';
+    const extracted = await extractTextWithPdfJs(buffer);
+    if (!extracted.success) {
+      if (feedbackEl) feedbackEl.textContent = feedbackEl.dataset.defaultText || '';
+      alert(extracted.error || '未在 PDF 中找到 DOI，且無法從 PDF 擷取書目資訊。\n請改用「文字模式」手動貼入書目資料。');
+      return false;
+    }
+    if (extracted.source === 'doi-from-text') {
+      await enqueuePdfDoi(extracted.doi, feedbackEl);
+    } else {
+      await pdfExtractedToQueue(extracted, feedbackEl);
+    }
+    return true;
+  }
+  await enqueuePdfDoi(doi, feedbackEl);
+  return true;
+}
+
+// 當前分頁為 PDF → 背景二進制 DOI 掃描；失敗時 popup 端用 PDF.js 全文擷取
+btnParsePdfTab.addEventListener('click', async () => {
+  if (!pagePdfUrl) return;
+  btnParsePdfTab.dataset.defaultText = '解析此 PDF 並加入佇列';
+  btnParsePdfTab.textContent = '下載並解析中…';
+  btnParsePdfTab.disabled = true;
+  try {
+    // Stage 1：背景二進制掃描（快速，同時嘗試 DOI 與 binary metadata）
+    const response = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ action: 'fetchPdfDoi', url: pagePdfUrl }, resolve)
+    );
+    if (response?.success && !response.fallbackText) {
+      await enqueuePdfDoi(response.doi, btnParsePdfTab);
+      return;
+    }
+    if (response?.success && response.fallbackText) {
+      await enqueuePdfText(response.title, response.formattedText, btnParsePdfTab);
+      return;
+    }
+
+    // Stage 2：背景掃描失敗 → popup 端 PDF.js（支援壓縮 metadata 與文字層）
+    btnParsePdfTab.textContent = '正在嘗試從 PDF 全文擷取…';
+    const res = await fetch(pagePdfUrl, { headers: { Accept: 'application/pdf,*/*' }, redirect: 'follow' });
+    if (!res.ok) throw new Error(`無法下載 PDF（HTTP ${res.status}）`);
+    const buffer = await res.arrayBuffer();
+
+    const extracted = await extractTextWithPdfJs(buffer);
+    if (!extracted.success) {
+      alert(extracted.error || '未在 PDF 中找到 DOI，且無法從內容擷取書目資訊。\n請改用「文字模式」手動貼入書目資料。');
+      return;
+    }
+    if (extracted.source === 'doi-from-text') {
+      await enqueuePdfDoi(extracted.doi, btnParsePdfTab);
+    } else {
+      await pdfExtractedToQueue(extracted, btnParsePdfTab);
+    }
+  } catch (e) {
+    alert('錯誤：' + e.message);
+  } finally {
+    btnParsePdfTab.disabled = false;
+    if (!btnParsePdfTab.textContent.startsWith('✓')) {
+      btnParsePdfTab.textContent = btnParsePdfTab.dataset.defaultText;
+    }
+  }
+});
+
+
 // ── RIS / BibTeX / ENW 書目匯入 ─────────────────────────
 
 btnImportFile.addEventListener('click', () => fileImport.click());
@@ -890,6 +1105,21 @@ fileImport.addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
   fileImport.value = '';
+
+  // PDF 路徑：二進制掃 DOI，不用 PDF.js
+  if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+    btnImportFile.textContent = '掃描 DOI 中…';
+    btnImportFile.disabled = true;
+    btnImportFile.dataset.defaultText = '匯入 RIS / BibTeX / ENW / PDF 檔案';
+    try {
+      await handlePdfBuffer(await file.arrayBuffer(), btnImportFile);
+    } finally {
+      btnImportFile.disabled = false;
+      if (!btnImportFile.textContent.startsWith('✓'))
+        btnImportFile.textContent = '匯入 RIS / BibTeX / ENW / PDF 檔案';
+    }
+    return;
+  }
 
   const content = await file.text();
   const format  = detectBibFormat(content);
@@ -1548,54 +1778,52 @@ empInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') lookupOrcidByEmpId(empInput.value.trim());
 });
 
-btnSaveOrcid.addEventListener('click', async () => {
+btnCheckOrcid.addEventListener('click', async () => {
   const id = orcidInput.value.trim();
-  if (!/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(id)) {
+  if (id && !/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(id)) {
     alert('請輸入正確格式的 ORCID（如 0000-0001-2345-6789）');
     return;
   }
-  const toSave = { orcidId: id, orcidKnown: [], orcidNewWorks: [] };
-  const empId = empInput.value.trim();
-  if (empId && /^\d{4,7}$/.test(empId)) {
-    // 有員工編號：存入對應表，並補查 scholarId
-    const { customEmpOrcidMap = {} } = await chrome.storage.sync.get('customEmpOrcidMap');
-    customEmpOrcidMap[empId] = id;
-    await chrome.storage.sync.set({ customEmpOrcidMap });
-    toSave.savedEmpId = empId;
-    await new Promise(resolve => {
-      chrome.runtime.sendMessage({ action: 'lookupOrcidByEmpId', empId }, res => {
-        if (res?.scholarId) toSave.scholarId = res.scholarId;
-        resolve();
-      });
-    });
-  } else {
-    // 沒有員工編號：用 ORCID 反查 scholarId
-    await new Promise(resolve => {
-      chrome.runtime.sendMessage({ action: 'lookupScholarIdByOrcid', orcid: id }, res => {
-        if (res?.scholarId) toSave.scholarId = res.scholarId;
-        resolve();
-      });
-    });
-  }
-  if (!empId) {
-    await chrome.storage.local.remove(['savedEmpId', 'scholarId']);
-    empInput.value = '';
-  }
-  await chrome.storage.local.set(toSave);
-  await loadOrcidSettings();
-  btnSaveOrcid.textContent = '已儲存 ✓';
-  setTimeout(() => { btnSaveOrcid.textContent = '儲存'; }, 2000);
-  // 儲存後自動重新查詢
-  btnCheckOrcid.click();
-});
-
-btnCheckOrcid.addEventListener('click', async () => {
   btnCheckOrcid.textContent = '檢查中…';
   btnCheckOrcid.disabled = true;
+
+  // 儲存 ORCID 與員工編號（若有填寫）
+  if (id) {
+    const toSave = { orcidId: id, orcidKnown: [], orcidNewWorks: [] };
+    const empId = empInput.value.trim();
+    if (empId && /^\d{4,7}$/.test(empId)) {
+      const { customEmpOrcidMap = {} } = await chrome.storage.sync.get('customEmpOrcidMap');
+      customEmpOrcidMap[empId] = id;
+      await chrome.storage.sync.set({ customEmpOrcidMap });
+      toSave.savedEmpId = empId;
+      await new Promise(resolve => {
+        chrome.runtime.sendMessage({ action: 'lookupOrcidByEmpId', empId }, res => {
+          if (res?.scholarId) toSave.scholarId = res.scholarId;
+          resolve();
+        });
+      });
+    } else {
+      await new Promise(resolve => {
+        chrome.runtime.sendMessage({ action: 'lookupScholarIdByOrcid', orcid: id }, res => {
+          if (res?.scholarId) toSave.scholarId = res.scholarId;
+          resolve();
+        });
+      });
+      if (!empId) {
+        await chrome.storage.local.remove(['savedEmpId', 'scholarId']);
+        empInput.value = '';
+      }
+    }
+    await chrome.storage.local.set(toSave);
+  } else {
+    // 沒有輸入新 ORCID：只重置 orcidKnown，保留現有 ORCID ID
+    await chrome.storage.local.set({ orcidKnown: [], orcidNewWorks: [] });
+  }
+
   chrome.runtime.sendMessage({ action: 'checkOrcid' }, async () => {
     await loadOrcidSettings();
     await checkNewOrcidWorks();
-    btnCheckOrcid.textContent = '立即檢查';
+    btnCheckOrcid.textContent = '立即檢查著作';
     btnCheckOrcid.disabled = false;
   });
 });
@@ -1994,6 +2222,7 @@ function showConfirm(meta) {
   show(sectionConfirm);
 
   const badges = [
+    meta.identifierType === 'pdfText' ? '' :
     meta.hasAbstract ? '<span class="confirm-badge badge-ok">有摘要</span>' : '<span class="confirm-badge badge-warn">無摘要</span>',
     meta.authorCount ? `<span class="confirm-badge badge-ok">${meta.authorCount} 位作者</span>` : '',
   ].join('');
