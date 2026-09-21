@@ -77,7 +77,11 @@ cp config.example.js config.js
 
 #### 方式 B：文字 / 引用格式
 
-切換至「文字 / 檔案」分頁，直接貼上引用文字（支援 APA、BibTeX、RIS、純文字）或匯入 `.ris` / `.bib` / `.enw` 檔案，可一次匯入多筆。
+切換至「文字 / 檔案」分頁：
+
+- **引用文字**：直接貼上引用文字（支援 APA、BibTeX、RIS、純文字），AI 直接解析。
+- **引用格式檔**：匯入 `.ris` / `.bib` / `.enw` 檔案，可一次匯入多筆。
+- **PDF 檔案**：匯入 `.pdf`，系統依序執行三層書目擷取（二進制 DOI 掃描 → metadata 擷取 → PDF.js 首兩頁文字擷取），有 DOI 則轉 CrossRef 完整查詢，否則將文字送 AI 解析。
 
 #### 方式 C：從 ORCID 自動偵測
 
