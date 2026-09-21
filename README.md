@@ -40,7 +40,7 @@ cp config.example.js config.js
 2. 切換至「**著作佇列**」分頁
 3. 點選「**從政大系統自動帶入員編與 ORCID**」（需已登入政大網頁）
    - 或手動輸入員工編號後按「查 ORCID」
-4. 確認下方顯示正確的 ORCID 後按「**儲存**」
+4. 確認下方顯示正確的 ORCID 後，按「**立即檢查著作**」完成設定並開始偵測著作
 
 ---
 
@@ -81,7 +81,7 @@ cp config.example.js config.js
 
 #### 方式 C：從 ORCID 自動偵測
 
-切換至「著作佇列」分頁，按「**立即檢查著作**」，系統比對 ORCID 紀錄與論著系統現有資料，自動列出尚未建檔的論著，勾選後按「**匯入選取論著**」批次加入佇列。
+切換至「著作佇列」分頁，按「**立即檢查著作**」，系統每次均重新比對全部 ORCID 著作與論著系統現有資料，自動列出尚未建檔的論著，勾選後按「**匯入選取論著**」批次加入佇列。
 
 ### 步驟三：確認書目
 
@@ -100,11 +100,12 @@ AI 解析完成後，預覽區顯示各欄位對應結果。按「**填入表單
 
 | 識別碼 | 查詢來源 |
 |--------|----------|
-| DOI | CrossRef → OpenAlex → Semantic Scholar → Unpaywall |
+| DOI | CrossRef（主）→ DataCite（備援）；並行查詢 OpenAlex、Semantic Scholar、Unpaywall |
 | PMID | PubMed Central |
 | arXiv | arXiv API |
 | ISBN | Open Library → CrossRef |
 | 網址 | 頁面 HTML meta tag（支援 AH 機構典藏、Airiti、各大期刊網站） |
+| PDF | 三層遞進：二進制 DOI 掃描 → metadata 擷取 → PDF.js 首兩頁文字擷取（含亂碼偵測） |
 | 純文字 / 引用格式 | GPT 直接解析（無外部查詢） |
 
 ---
@@ -137,7 +138,10 @@ node scripts/build-scholar-lookup.js
 ├── content_script.js      # 注入論著系統頁面：自動填表
 ├── popup/
 │   ├── popup.html         # 側欄 UI
-│   └── popup.js           # 側欄邏輯
+│   └── popup.js           # 側欄邏輯（含 PDF.js Layer 3 執行）
+├── lib/
+│   ├── pdf.mjs            # PDF.js 主程式
+│   └── pdf.worker.mjs     # PDF.js Worker
 ├── data/
 │   ├── scholar_lookup.json    # 員工編號 → ORCID / 中文系所對照
 │   ├── taiwan_journals.json   # 台灣期刊資料庫（TSSCI / THCI 等）
