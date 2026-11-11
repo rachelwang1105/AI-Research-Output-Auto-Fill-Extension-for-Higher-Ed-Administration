@@ -13,15 +13,13 @@ git clone https://github.com/rachelwang1105/AI-Research-Output-Auto-Fill-Extensi
 cd AI-Research-Output-Auto-Fill-Extension-for-Higher-Ed-Administration
 ```
 
-### 2. 建立 API 金鑰設定檔
+### 2. 載入後設定 API 金鑰
 
-將 `config.example.js` 複製為 `config.js`，填入實際的 API 金鑰：
+本專案不在程式碼或設定檔中存放金鑰。載入擴充功能後（見下一步），
+在側欄「著作佇列」分頁的「**AI 設定**」輸入 AI API Key 並按「儲存」即可；
+金鑰只存在使用者自己的瀏覽器（`chrome.storage.local`），不會進版控。
 
-```bash
-cp config.example.js config.js
-```
-
-開啟 `config.js`，將 `YOUR_API_KEY_HERE` 換成實際金鑰後存檔（此檔案已列入 `.gitignore`，不會上傳至 GitHub）。
+AI 端點、模型與參數集中在 `app-config.js` 的 `CONFIG.ai`，要換服務或換模型只改這個檔案。
 
 ### 3. 載入至 Chrome
 
@@ -32,15 +30,23 @@ cp config.example.js config.js
 
 ---
 
-## 初始設定：員工編號與 ORCID
+## 初始設定：ORCID 與 AH 學者頁
 
-首次使用前，建議先設定個人識別資訊，讓系統在所有著作中自動標記本人並套用系所。
+首次使用前先設定個人識別資訊，讓系統追蹤你的新著作並比對 AH 既有建檔。**只需設定一次。**
 
 1. 點選 Chrome 工具列的論著助手圖示，開啟側欄
 2. 切換至「**著作佇列**」分頁
-3. 點選「**從政大系統自動帶入員編與 ORCID**」（需已登入政大網頁）
-   - 或手動輸入員工編號後按「查 ORCID」
-4. 確認下方顯示正確的 ORCID 後，按「**立即檢查著作**」完成設定並開始偵測著作
+3. 在「**我的身分設定**」填入兩項：
+   - **我的 ORCID**：格式 `0000-0000-0000-000X`（程式會驗證格式與最後一碼檢核碼）
+   - **我的 AH 學者頁網址**：在 AH（`ah.lib.nccu.edu.tw`）搜尋自己的名字，
+     進入個人學者頁後直接複製瀏覽器網址列的網址，例如
+     `https://ah.lib.nccu.edu.tw/scholar?id=12398&title=items&subtitle=all`
+     （程式只接受網域 `ah.lib.nccu.edu.tw`、路徑 `/scholar`、且 `id` 為純數字的網址）
+4. 按「**驗證並顯示解析結果**」，畫面會顯示從 ORCID 公開資料與 AH 學者頁讀到的姓名，
+   確認是本人資料後再按「**確認是我，儲存**」
+5. 之後開啟擴充功能會自動讀取，可隨時用「修改」／「清除」調整
+
+> 本擴充功能不再內建任何員工編號／姓名／ORCID 對照表，也不會從校務系統讀取登入者員編。
 
 ---
 
@@ -126,11 +132,8 @@ A：部分付費期刊或機構典藏的 HTML 結構較特殊，摘要仍需手�
 A：若 CrossRef 資料僅有英文系所名，系統會自動對照政大系所名稱翻成中文縮寫。若仍顯示英文，表示該系所名稱尚未收錄，請手動修改。
 
 **Q：如何更新 CSV 中的人員資料？**
-A：更新 `e-personid.csv` 後，在專案根目錄執行：
-```bash
-node scripts/build-scholar-lookup.js
-```
-重新產生 `data/scholar_lookup.json`，再重新載入擴充功能。
+A：本擴充功能已移除所有員編／姓名／ORCID 對照表（個資考量）。
+請在側欄「我的身分設定」自行輸入 ORCID 與 AH 學者頁網址。
 
 ---
 
@@ -147,10 +150,7 @@ node scripts/build-scholar-lookup.js
 │   ├── pdf.mjs            # PDF.js 主程式
 │   └── pdf.worker.mjs     # PDF.js Worker
 ├── data/
-│   ├── scholar_lookup.json    # 員工編號 → ORCID / 中文系所對照
-│   ├── taiwan_journals.json   # 台灣期刊資料庫（TSSCI / THCI 等）
-│   └── employee_orcid.json    # 員工 ORCID 補充對應
-├── config.js              # API 金鑰（本地，不上傳）
-├── config.example.js      # 金鑰設定範本
+│   └── taiwan_journals.json   # 台灣期刊資料庫（TSSCI / THCI 等）
+├── app-config.js          # CONFIG：AI 端點／模型／參數與行為開關
 └── manifest.json          # 擴充功能描述（MV3）
 ```

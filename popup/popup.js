@@ -34,15 +34,26 @@ const previewBox     = document.getElementById('previewBox');
 const btnFill        = document.getElementById('btnFill');
 const btnCancel      = document.getElementById('btnCancel');
 const btnNewDoi      = document.getElementById('btnNewDoi');
-const apiKeyInput      = { value: '' };  // API key 已內建，不顯示於 UI
+const apiKeyInput      = document.getElementById('apiKeyInput');
+const apiKeyStatus     = document.getElementById('apiKeyStatus');
 const btnSaveKey       = document.getElementById('btnSaveKey');
-const btnAutoDetect    = document.getElementById('btnAutoDetect');
-const empInput         = document.getElementById('empInput');
-const btnLookupOrcid   = document.getElementById('btnLookupOrcid');
-const empStatus        = document.getElementById('empStatus');
 const orcidInput       = document.getElementById('orcidInput');
+const ahUrlInput       = document.getElementById('ahUrlInput');
+const identityForm     = document.getElementById('identityForm');
+const identityConfirm  = document.getElementById('identityConfirm');
+const identityConfirmBox = document.getElementById('identityConfirmBox');
+const identitySaved    = document.getElementById('identitySaved');
+const identitySavedBox = document.getElementById('identitySavedBox');
+const btnResolveIdentity = document.getElementById('btnResolveIdentity');
+const btnIdentitySave  = document.getElementById('btnIdentitySave');
+const btnIdentityCancel= document.getElementById('btnIdentityCancel');
+const btnIdentityEdit  = document.getElementById('btnIdentityEdit');
+const btnIdentityClear = document.getElementById('btnIdentityClear');
 const orcidStatus      = document.getElementById('orcidStatus');
 const btnCheckOrcid    = document.getElementById('btnCheckOrcid');
+
+// AI API key 的 chrome.storage.local 欄位名稱（須與 app-config.js 的 ai.apiKeyStorageKey 一致）
+const API_KEY_STORAGE = 'aiApiKey';
 const tabQueue          = document.getElementById('tabQueue');
 const modeQueueContainer = document.getElementById('modeQueueContainer');
 const queueTabBadge     = document.getElementById('queueTabBadge');
@@ -830,8 +841,31 @@ function detectDoiFromPage(tabId) {
 }
 
 
-// ── 2 & 3. API Key 已內建，略過 UI 讀寫 ──────────────────
-function loadApiKey() {}
+// ── API Key：由使用者輸入，只存在 chrome.storage.local ────
+async function loadApiKey() {
+  const stored = (await chrome.storage.local.get(API_KEY_STORAGE))[API_KEY_STORAGE];
+  if (stored) {
+    apiKeyInput.value = stored;
+    apiKeyStatus.textContent = `已設定（${stored.slice(0, 4)}…${stored.slice(-4)}）`;
+    apiKeyStatus.style.color = '#2e7d32';
+  } else {
+    apiKeyStatus.textContent = '尚未設定，未設定時無法執行 AI 欄位對應';
+    apiKeyStatus.style.color = '#9a6000';
+  }
+}
+
+btnSaveKey?.addEventListener('click', async () => {
+  const key = apiKeyInput.value.trim();
+  if (!key) {
+    await chrome.storage.local.remove(API_KEY_STORAGE);
+    apiKeyStatus.textContent = '已清除 API Key';
+    apiKeyStatus.style.color = '#9a6000';
+    return;
+  }
+  await chrome.storage.local.set({ [API_KEY_STORAGE]: key });
+  apiKeyStatus.textContent = '已儲存';
+  apiKeyStatus.style.color = '#2e7d32';
+});
 
 
 // ── 識別碼類型偵測 ───────────────────────────────────────
@@ -1629,196 +1663,174 @@ function showError(msg) {
 }
 
 
-// ── ORCID 設定 ────────────────────────────────────────────
+// ── 身分設定（ORCID + AH 學者頁）──────────────────────────
+// 使用者自行輸入 ORCID 與 AH 學者頁網址，驗證後顯示姓名供確認，確認才存入 chrome.storage.local。
+// 只需設定一次；不再有任何員工編號對照表。
+
+let pendingIdentity = null;  // 等待使用者確認的解析結果
 
 async function loadOrcidSettings() {
-  const { orcidId, orcidLastCheck, orcidKnown = [], savedEmpId } =
-    await chrome.storage.local.get(['orcidId', 'orcidLastCheck', 'orcidKnown', 'savedEmpId']);
+  const { orcidId, scholarId, orcidLastCheck, orcidKnown = [], identityNames = {} } =
+    await chrome.storage.local.get(
+      ['orcidId', 'scholarId', 'orcidLastCheck', 'orcidKnown', 'identityNames']);
+
   if (orcidId) {
-    orcidInput.value = orcidId;
     const lastCheck = orcidLastCheck
       ? new Date(orcidLastCheck).toLocaleDateString('zh-TW')
       : '尚未檢查';
     orcidStatus.textContent = `追蹤中・${orcidKnown.length} 篇著作・上次檢查：${lastCheck}`;
-  }
-  if (savedEmpId) {
-    empInput.value = savedEmpId;
-  }
-}
-
-async function tryDetectEmpId() {
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs[0];
-    if (!/webapp\d*\.nccu\.edu\.tw/.test(tab?.url ?? '')) return;
-
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: true },
-      func: () => {
-        const el = document.querySelector('#IdLb');
-        if (el?.textContent?.trim().match(/^\d{4,7}$/)) return el.textContent.trim();
-        return null;
-      }
-    });
-
-    const empId = results?.find(r => r.result)?.result;
-    if (empId) {
-      empInput.value = empId;
-      empStatus.textContent = `已從政大系統偵測到員工編號 ${empId}`;
-      lookupOrcidByEmpId(empId, true);
-    }
-  } catch {
-    // 無存取權限或其他錯誤，靜默略過
+    identitySavedBox.innerHTML = [
+      `<div><strong>ORCID</strong>：${escapeHtml(orcidId)}` +
+        (identityNames.orcidName ? `（${escapeHtml(identityNames.orcidName)}）` : '') + '</div>',
+      scholarId
+        ? `<div><strong>AH 學者頁 ID</strong>：${escapeHtml(scholarId)}` +
+          (identityNames.ahName ? `（${escapeHtml(identityNames.ahName)}）` : '') + '</div>'
+        : '<div><strong>AH 學者頁</strong>：未設定（不會比對 AH 既有著作）</div>'
+    ].join('');
+    hide(identityForm);
+    hide(identityConfirm);
+    show(identitySaved);
+  } else {
+    orcidStatus.textContent = '尚未設定';
+    show(identityForm);
+    hide(identityConfirm);
+    hide(identitySaved);
+    orcidInput.value = '';
+    ahUrlInput.value = '';
   }
 }
 
-async function lookupOrcidByEmpId(empId, autoDetected = false) {
-  if (!empId || !/^\d{4,7}$/.test(empId)) {
-    empStatus.textContent = '請輸入正確的員工編號（4–7 位數字）';
-    empStatus.style.color = '#c62828';
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 驗證 → 顯示解析結果供使用者確認
+btnResolveIdentity.addEventListener('click', () => {
+  const orcid = orcidInput.value.trim();
+  const ahUrl = ahUrlInput.value.trim();
+  if (!orcid) {
+    orcidStatus.textContent = '請輸入 ORCID';
+    orcidStatus.style.color = '#c62828';
     return;
   }
-  empStatus.textContent = '查詢中…';
-  empStatus.style.color = '';
-  chrome.runtime.sendMessage({ action: 'lookupOrcidByEmpId', empId }, async (res) => {
-    const toStore = { savedEmpId: empId };
-    if (res?.scholarId) toStore.scholarId = res.scholarId;
-    if (res?.orcid) {
-      orcidInput.value = res.orcid;
-      empStatus.textContent = autoDetected
-        ? `偵測到員工編號 ${empId}，已自動填入 ORCID，請點「儲存」確認`
-        : `找到對應 ORCID，已填入欄位，請點「儲存」確認`;
-      empStatus.style.color = '#2e7d32';
-    } else {
-      empStatus.textContent = `員工編號 ${empId} 查無 ORCID，請手動填入下方欄位後點「儲存」`;
-      empStatus.style.color = '#9a6000';
+  btnResolveIdentity.textContent = '驗證中…';
+  btnResolveIdentity.disabled = true;
+  orcidStatus.style.color = '';
+
+  chrome.runtime.sendMessage({ action: 'resolveIdentity', orcid, ahUrl }, (res) => {
+    btnResolveIdentity.textContent = '驗證並顯示解析結果';
+    btnResolveIdentity.disabled = false;
+
+    if (!res || !res.ok) {
+      orcidStatus.textContent = (res?.errors || ['驗證失敗，請稍後再試']).join('；');
+      orcidStatus.style.color = '#c62828';
+      hide(identityConfirm);
+      pendingIdentity = null;
+      return;
     }
-    await chrome.storage.local.set(toStore);
+
+    pendingIdentity = res;
+    const rows = [
+      `<div><strong>ORCID</strong>：${escapeHtml(res.orcidId)}</div>`,
+      `<div><strong>ORCID 上的姓名</strong>：${res.orcidName
+        ? escapeHtml(res.orcidName)
+        : '<span style="color:#9a6000">（此 ORCID 未公開姓名）</span>'}</div>`,
+    ];
+    if (res.scholarId) {
+      rows.push(`<div><strong>AH 學者頁 ID</strong>：${escapeHtml(res.scholarId)}</div>`);
+      rows.push(`<div><strong>AH 學者頁姓名</strong>：${res.ahName
+        ? escapeHtml(res.ahName)
+        : '<span style="color:#9a6000">（讀不到頁面標題，請自行確認網址正確）</span>'}</div>`);
+    } else {
+      rows.push('<div><strong>AH 學者頁</strong>：未填（可日後補上；未填則不比對 AH 既有著作）</div>');
+    }
+    identityConfirmBox.innerHTML = rows.join('');
+    orcidStatus.textContent = '請確認解析結果';
+    show(identityConfirm);
   });
-}
+});
 
-btnAutoDetect.addEventListener('click', async () => {
-  btnAutoDetect.textContent = '偵測中…';
-  btnAutoDetect.disabled = true;
+// 確認後才存入
+btnIdentitySave.addEventListener('click', async () => {
+  if (!pendingIdentity) return;
+  const toSave = {
+    orcidId: pendingIdentity.orcidId,
+    orcidKnown: [],
+    orcidNewWorks: [],
+    identityNames: {
+      orcidName: pendingIdentity.orcidName || '',
+      ahName:    pendingIdentity.ahName || ''
+    }
+  };
+  if (pendingIdentity.scholarId) toSave.scholarId = pendingIdentity.scholarId;
+  else                           await chrome.storage.local.remove('scholarId');
 
-  // 清空先前顯示的內容
-  empInput.value = '';
-  orcidInput.value = '';
-  empStatus.textContent = '';
-  empStatus.style.color = '';
-  orcidStatus.textContent = '';
+  await chrome.storage.local.set(toSave);
+  pendingIdentity = null;
+  hide(identityConfirm);
+  orcidStatus.style.color = '';
+  await loadOrcidSettings();
+  orcidStatus.textContent = '已儲存，掃描著作中…';
+
+  btnCheckOrcid.textContent = '檢查中…';
+  btnCheckOrcid.disabled = true;
+  chrome.runtime.sendMessage({ action: 'checkOrcid' }, async () => {
+    await loadOrcidSettings();
+    await checkNewOrcidWorks();
+    btnCheckOrcid.textContent = '立即檢查著作';
+    btnCheckOrcid.disabled = false;
+  });
+});
+
+btnIdentityCancel.addEventListener('click', () => {
+  pendingIdentity = null;
+  hide(identityConfirm);
+  orcidStatus.textContent = '已取消，未儲存';
+  orcidStatus.style.color = '';
+});
+
+// 修改：把已存的值帶回表單
+btnIdentityEdit.addEventListener('click', async () => {
+  const { orcidId, scholarId } =
+    await chrome.storage.local.get(['orcidId', 'scholarId']);
+  orcidInput.value = orcidId || '';
+  ahUrlInput.value = scholarId
+    ? `https://ah.lib.nccu.edu.tw/scholar?id=${scholarId}&title=items&subtitle=all`
+    : '';
+  hide(identitySaved);
+  hide(identityConfirm);
+  show(identityForm);
+  orcidStatus.textContent = '修改後請重新驗證';
+  orcidStatus.style.color = '';
+});
+
+// 清除：移除本機所有身分與追蹤資料
+btnIdentityClear.addEventListener('click', async () => {
+  if (!confirm('確定要清除已儲存的 ORCID 與 AH 學者頁設定嗎？\n（暫存區的新偵測著作也會一併清空）')) return;
+  await chrome.storage.local.remove(
+    ['orcidId', 'scholarId', 'identityNames', 'orcidKnown', 'orcidNewWorks', 'orcidLastCheck']);
+  pendingIdentity = null;
   newWorksList.innerHTML = '';
   hide(queuePagination);
   worksActions.style.display = 'none';
-
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  const tab = tabs[0];
-
-  if (!/webapp\d*\.nccu\.edu\.tw/.test(tab?.url ?? '')) {
-    empStatus.textContent = '請先切換到政大系統頁面再點此按鈕';
-    empStatus.style.color = '#c62828';
-    btnAutoDetect.textContent = '從政大系統自動帶入員編與 ORCID';
-    btnAutoDetect.disabled = false;
-    return;
-  }
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tab.id, allFrames: true },
-    func: () => {
-      const el = document.querySelector('#IdLb');
-      if (el?.textContent?.trim().match(/^\d{4,7}$/)) return el.textContent.trim();
-      return null;
-    }
-  });
-
-  btnAutoDetect.textContent = '從政大系統自動帶入員編與 ORCID';
-  btnAutoDetect.disabled = false;
-
-  const empId = results?.find(r => r.result)?.result;
-  if (!empId) {
-    empStatus.textContent = '無法偵測到員工編號，請確認已登入政大系統';
-    empStatus.style.color = '#c62828';
-    return;
-  }
-
-  empInput.value = empId;
-  empStatus.textContent = `偵測到員工編號 ${empId}，查詢 ORCID 中…`;
-  empStatus.style.color = '';
-
-  chrome.runtime.sendMessage({ action: 'lookupOrcidByEmpId', empId }, async (res) => {
-    if (!res?.orcid) {
-      empStatus.textContent = `員工編號 ${empId} 無對應 ORCID 資料`;
-      empStatus.style.color = '#c62828';
-      return;
-    }
-    orcidInput.value = res.orcid;
-    const toStore2 = { orcidId: res.orcid, savedEmpId: empId, orcidKnown: [], orcidNewWorks: [] };
-    if (res.scholarId) toStore2.scholarId = res.scholarId;
-    await chrome.storage.local.set(toStore2);
-    empStatus.textContent = `已帶入員工編號 ${empId} 與 ORCID`;
-    empStatus.style.color = '#2e7d32';
-    orcidStatus.textContent = '已儲存，掃描著作中…';
-
-    btnCheckOrcid.textContent = '檢查中…';
-    btnCheckOrcid.disabled = true;
-    chrome.runtime.sendMessage({ action: 'checkOrcid' }, async () => {
-      await loadOrcidSettings();
-      await checkNewOrcidWorks();
-      btnCheckOrcid.textContent = '立即檢查';
-      btnCheckOrcid.disabled = false;
-    });
-  });
+  hide(queueTabBadge);
+  await loadOrcidSettings();
+  orcidStatus.textContent = '已清除';
+  orcidStatus.style.color = '';
 });
 
-btnLookupOrcid.addEventListener('click', () => {
-  lookupOrcidByEmpId(empInput.value.trim());
-});
-
-empInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') lookupOrcidByEmpId(empInput.value.trim());
-});
-
+// 立即檢查著作（不改動已存設定）
 btnCheckOrcid.addEventListener('click', async () => {
-  const id = orcidInput.value.trim();
-  if (id && !/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(id)) {
-    alert('請輸入正確格式的 ORCID（如 0000-0001-2345-6789）');
+  const { orcidId } = await chrome.storage.local.get('orcidId');
+  if (!orcidId) {
+    orcidStatus.textContent = '請先設定並儲存 ORCID';
+    orcidStatus.style.color = '#c62828';
     return;
   }
   btnCheckOrcid.textContent = '檢查中…';
   btnCheckOrcid.disabled = true;
-
-  // 儲存 ORCID 與員工編號（若有填寫）
-  if (id) {
-    const toSave = { orcidId: id, orcidKnown: [], orcidNewWorks: [] };
-    const empId = empInput.value.trim();
-    if (empId && /^\d{4,7}$/.test(empId)) {
-      const { customEmpOrcidMap = {} } = await chrome.storage.sync.get('customEmpOrcidMap');
-      customEmpOrcidMap[empId] = id;
-      await chrome.storage.sync.set({ customEmpOrcidMap });
-      toSave.savedEmpId = empId;
-      await new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'lookupOrcidByEmpId', empId }, res => {
-          if (res?.scholarId) toSave.scholarId = res.scholarId;
-          resolve();
-        });
-      });
-    } else {
-      await new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'lookupScholarIdByOrcid', orcid: id }, res => {
-          if (res?.scholarId) toSave.scholarId = res.scholarId;
-          resolve();
-        });
-      });
-      if (!empId) {
-        await chrome.storage.local.remove(['savedEmpId', 'scholarId']);
-        empInput.value = '';
-      }
-    }
-    await chrome.storage.local.set(toSave);
-  } else {
-    // 沒有輸入新 ORCID：只重置 orcidKnown，保留現有 ORCID ID
-    await chrome.storage.local.set({ orcidKnown: [], orcidNewWorks: [] });
-  }
+  orcidStatus.style.color = '';
 
   chrome.runtime.sendMessage({ action: 'checkOrcid' }, async () => {
     await loadOrcidSettings();

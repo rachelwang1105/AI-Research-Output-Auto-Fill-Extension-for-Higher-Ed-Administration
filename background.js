@@ -1,6 +1,25 @@
 ﻿// background.js
-// 負責：接收 popup 的指令、查詢 CrossRef API、呼叫 OpenAI API、把結果傳回去
-import './config.js'; // API key (self._AK) 由 config.js 提供，不進版控
+// 負責：接收 popup 的指令、查詢 CrossRef API、呼叫 AI API、把結果傳回去
+import { CONFIG } from './app-config.js'; // AI 端點、模型、參數一律從此處取得
+
+// API key 由使用者在側邊面板輸入，存 chrome.storage.local；
+// 舊版把金鑰寫在 config.js（已列入 .gitignore），若存在則一次性搬進 storage 後即可刪除該檔。
+async function getAiApiKey() {
+  const storeKey = CONFIG.ai.apiKeyStorageKey;
+  const stored = (await chrome.storage.local.get(storeKey))[storeKey];
+  if (stored) return stored;
+
+  try {
+    await import('./config.js');          // 舊版設定檔（可能不存在）
+    const legacy = self._AK;
+    if (legacy && legacy !== 'YOUR_API_KEY_HERE') {
+      await chrome.storage.local.set({ [storeKey]: legacy });
+      return legacy;
+    }
+  } catch { /* 沒有 config.js，屬正常情況 */ }
+
+  return '';
+}
 
 const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理政治大學論著目錄系統的資料填寫。
 請根據輸入的書目資訊，輸出一個符合以下規格的 JSON 物件。
@@ -39,9 +58,17 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - auth_cnt: 總作者人數（數字）
 - authors: 填**所有**作者（陣列），每位作者一個物件，格式：{"sta_chi":"姓名","sta_ut_nam":"所屬系所","ca_sts":"0"}
   - sta_chi: **只能填資料來源中已明確出現的中文姓名**。若輸入只有英文/拼音姓名（如 "Wen-Hung Liao"），直接填英文姓名（格式：Given Family，如 "Wen-Hung Liao"）。**嚴格禁止從拼音、羅馬字或英文名推測、翻譯或生成中文字**
-  - sta_ut_nam 規則：**每位作者的 sta_ut_nam 必須獨立判斷，絕對禁止從其他作者的機構推測、複製或套用**。判斷順序：**⓪若 author[i] 自身有 orcid-dept 欄位，將 orcid-org（若有）翻譯成繁體中文正式機構名稱後，與 orcid-dept 直接拼接，格式為「[機構全名][系所名]」，例如 orcid-org="National Chengchi University" + orcid-dept="資訊科學系" → "國立政治大學資訊科學系"；若 orcid-org 為空則只填 orcid-dept 原值**；①使用該作者自己的 affiliation 文字（其他作者的 affiliation 不可用）；②學術機構：取最小系所單位（如 "Department of Computer Science, NCCU" → "資科系"）；③非學術機構（政府、軍方、企業、研究院）：去掉城市、國家後保留機構單位全名（如 "Material Production Center Armaments Bureau, MND, The 401st Factory, Taichung, Taiwan" → "Material Production Center Armaments Bureau, MND, The 401st Factory"）；④**若 affiliation 只有大學／學院／學校名稱（不含系、所、院、中心、研究室等次級單位），必須填空字串 ""**——例如 "National Chengchi University" → ""、"Stanford University" → ""、"政治大學" → ""；**絕對禁止**將學校名稱翻譯成中文後填入；⑤若該作者無任何明確文字來源（affiliation 不存在或為空、也無 orcid-dept），一律填空字串 ""
+  - sta_ut_nam 規則：**最高原則——以文稿上實際印出的單位為準。只能照抄輸入中的 affiliation 原文，不得翻譯、不得縮寫、不得改寫成系所簡稱、不得推測。**
+    **每位作者的 sta_ut_nam 必須獨立判斷，絕對禁止從其他作者的機構推測、複製或套用。**
+    判斷順序：
+    ①使用該作者自己的 affiliation 欄位文字（這就是文稿 affiliation 區塊的原文）。若該作者另有 affiliation-all 陣列（文稿上印了多個單位），affiliation 欄位已是程式挑選的結果，直接採用 affiliation，不要自己改挑別筆。
+    ②把 ① 的文字去掉郵遞區號、城市、國家後，**原文照抄**其餘完整單位文字。例如 "Department of Computer Science, National Chengchi University, Taipei 11605, Taiwan" → "Department of Computer Science, National Chengchi University"；"資訊科學系, 國立政治大學, 台北" → "資訊科學系, 國立政治大學"。**不可翻成中文、不可縮寫成「資科系」之類的簡稱。**
+    ③非學術機構（政府、軍方、企業、研究院）同樣去掉城市、國家後保留單位全名，如 "Material Production Center Armaments Bureau, MND, The 401st Factory, Taichung, Taiwan" → "Material Production Center Armaments Bureau, MND, The 401st Factory"。
+    ④**若 affiliation 只有大學／學院／學校名稱（不含系、所、院、中心、研究室等次級單位），必須填空字串 ""**——例如 "National Chengchi University" → ""、"Stanford University" → ""、"政治大學" → ""。
+    ⑤若該作者沒有 affiliation（欄位不存在或為空），才看該作者自己的 orcid-dept：有則填 orcid-dept 原值（**不要**拼上 orcid-org、不要翻譯）。orcid-dept 來自 ORCID 的「目前任職單位」，可能與發表當時文稿上的單位不同，因此優先序最低。
+    ⑥以上皆無者，一律填空字串 ""。**寧可留空，也不要填推測值。**
   - ca_sts: 該作者是否為通訊作者："1"=是, "0"=否。**若輸入的 author[i].corresponding 為 true，填 "1"**；否則填 "0"
-  **【Department 欄位】若輸入有 "Department: XXX" 欄位（來自機構典藏的系所資訊），且該作者無自己的 orcid-dept 或 affiliation，則將 Department 值套用為該作者的 sta_ut_nam（適用於所有無個人系所資訊的作者）**
+  **【Department 欄位】若輸入有 "Department: XXX" 欄位（來自機構典藏的系所資訊），且該作者無自己的 affiliation 或 orcid-dept，則將 Department 值原文套用為該作者的 sta_ut_nam（適用於所有無個人系所資訊的作者）**
   **【純文字輸入嚴格警告】若輸入格式為純文字（含 "Authors: A; B" 或 "作者：A；B" 的文字行，而非含有 "author":[...] 的 JSON），Authors 行中的逗號是西方姓名「姓, 名」分隔符（如 "Wang, Wen-Hung" = 姓 Wang、名 Wen-Hung），絕對不是「姓名, 系所」格式。此情況下若有 Department: 欄位則依上方規則套用，若無則所有作者的 sta_ut_nam 均必須填空字串 ""，禁止把姓名的任何部分（包含姓氏、名字、拼音）填入 sta_ut_nam**
   **【作者計數規則】Authors 行中以分號（;）分隔的每個名字，無論外觀是否相似或疑似同一人的不同語言名字（如中文名＋原住民族名、中文名＋英文名），一律各自建立一個獨立的作者物件。有幾個分號分隔的名字，authors 陣列就有幾個物件，auth_cnt 也對應填入該數字。**
 - trsnat: 跨國合作。判斷順序：①若輸入有 _author_countries 欄位，依其國碼陣列判斷：全為 "TW" → "0"；含 "CN"/"HK"/"MO" 且無其他非 TW 國碼 → "2"；含任一非 TW 且非 CN/HK/MO 的國碼 → "1"；含 CN/HK/MO 又含其他非 TW 國碼 → "1"。②若無 _author_countries，從各作者 affiliation 文字推斷所屬國家後套用同樣規則。③完全無資訊時填 "0"
@@ -60,11 +87,12 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - jnl_nam: 期刊名稱（只填學術期刊名，不可填會議名稱）
 - vol: 卷別
 - no: 期別
-- pp: 起迄頁次，格式如 "45-67"
+- pp: 起迄頁次。**格式規則：**①有起頁與迄頁 → 用半形連字號連接，如 "61-73"（來源若是 "61–73"、"61—73"、"61 - 73"、"pp. 61-73" 都要正規化成 "61-73"）；②只有單頁 → 只填該數字，如 "61"；③來源只有文章編號／電子編號（如 MDPI 的 page="6173"、PLOS 的 "e0123456"）→ 原樣只填一個值，**絕對不可自行拆成或湊成區間**；④完全沒有頁碼資訊 → 填空字串 ""。禁止自行推算迄頁
 - citelist: 收錄資料庫陣列，從以下選符合的：0=none（未收錄任何資料庫）, a=AHCI, b=SSCI, c=SCIE, d=EI, e=TSSCI, f=MLA, g=CSA, h=LLBA, i=ACM, j=DBLP, k=IEEE, l=CITESEEN, m=SCI, n=THCI, p=CSSCI, q=THCI Core, r=SCOPUS, x=other。**若輸入中有 _known_dbs 欄位，必須將其所有值原封不動納入 citelist，不可遺漏任何一個**（程式已自動判斷 TSSCI/THCI/THCI Core/SCOPUS/WoS/IEEE/ACM/DBLP 等，代碼已正確對應）。**若輸入中有 _wos_subtype 欄位，表示 WoS 子資料庫已由程式依 OpenAlex 主題領域推導，對應代碼已在 _known_dbs 中，請納入 citelist，並將 _wos_subtype 的值（如「SSCI（主題領域推導，請確認）」）直接寫入 citetpe_rem**。若輸入中有 _wos: true（無 _wos_subtype），表示期刊確認收錄於 WoS 但子資料庫未知，請將 "【需確認 WoS 子資料庫：SSCI/SCIE/AHCI 擇一勾選】" 寫入 citetpe_rem，citelist 中不自行填入 a/b/c。EI 若未出現在 _known_dbs，不確定則不填
 - citetpe_rem: 收錄資料庫其他說明，若無則留空字串
-- nat_tpe: "1"=國內期刊（nat_cod 為 TWN 時），"2"=國外期刊（nat_cod 非 TWN 時）。必須與 nat_cod 一致
-- nat_cod: 期刊出版國 ISO 3碼。判斷順序：①若輸入有 _journal_country 欄位，直接使用該值；②否則從 publisher-location 推斷城市/國家；③否則從 publisher 名稱推斷（Elsevier→NLD, Springer/Nature→GBR, Wiley→USA, IEEE/ACM→USA 等）。常用對照：TWN=台灣, USA=美國, GBR=英國, NLD=荷蘭, DEU=德國, FRA=法國, JPN=日本, CHN=中國, KOR=韓國, SGP=新加坡, AUS=澳洲, CHE=瑞士
+- nat_cod: 期刊出版國 ISO 3碼。**只有一條規則：若輸入有 _journal_country 欄位，填入該值；若沒有該欄位，一律填空字串 ""。**
+  **嚴格禁止推測**：不可從 publisher 名稱、publisher-location、期刊名稱、作者機構、作者國籍、語言或任何其他線索推斷出版國。出版國查不到時由使用者在表單上手動選擇，**絕對不可預設為 TWN**（填 TWN 會讓論著被誤判為國內期刊）。程式端已先用「OpenAlex 期刊註冊國 → Airiti ACI 台灣期刊清單 → CrossRef publisher-location → 出版商對照表」四層確定性判斷，判得出來才會給 _journal_country。
+- nat_tpe: "1"=國內期刊（nat_cod 為 "TWN" 時），"2"=國外期刊（nat_cod 為其他非空值時）。**nat_cod 為空字串時，nat_tpe 也必須填空字串 ""**，不可猜測
 - pertpe_cod: 論文性質："1"=ARTICLE, "2"=REVIEW, "3"=LETTER, "4"=NOTE
 - publ_type: 出版形式："0"=紙本期刊, "1"=電子期刊, "2"=紙本及電子。判斷方式：若輸入 JSON 有 "issn-type" 欄位，檢查其陣列中是否同時含 type="print" 與 type="electronic" → 填 "2"；只含 type="electronic" → 填 "1"；只含 type="print" → 填 "0"；若無 "issn-type" 欄位或陣列為空 → 預設填 "2"
 - url_addr: 文章或期刊的網址。優先順序：①若輸入有 URL 欄位，直接複製該 URL（完整連結，包含路徑，DOI 連結、資料庫永久連結、開放取用頁面均可）；②否則若輸入有 _journal_url，直接複製其值；③以上皆無則填空字串 ""
@@ -79,7 +107,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - publ_nam: 出版社名稱（來自 Publisher: 欄位）
 - publ_pls: 出版地點（城市或國家）
 - publ_rem: 出版形式選其他的補充說明，通常留空字串
-- page_num: 起迄頁次，如 "45-67"（僅 publ_tpe=02 專書篇章才填，來自 Pages: 欄位；其他留空字串）
+- page_num: 起迄頁次（僅 publ_tpe=02 專書篇章才填，來自 Pages: 欄位；其他留空字串）。格式規則與期刊論文的 pp 完全相同：起迄用半形連字號 "45-67"，單頁只填一個數字，不可自行湊出區間
 
 會議論文專用欄位（publ_tpe 為 04 時才填，其他類別省略不輸出）：
 **publ_tpe 是 "04" 時，以下欄位必須全部出現在輸出 JSON 中（即使是空字串）；其他類別省略不輸出，程式端會自動補入預設值。**
@@ -93,7 +121,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - intl_conf: 是否為國際學術研討會："0"=否，"1"=是。判斷依據：會議名稱含 International/IEEE/ACM/Global/World 等關鍵字，且舉辦地點非台灣，或作者來自多個不同國家機構 → 填 "1"；否則填 "0"
 - proceeding: 是否有出版論文集："y"=是, "n"=否。**若輸入中有 container-title 或 ISBN，填 "y"；否則填 "n"**
 - thesis_chi: 論文集（Proceedings）名稱，英文也填此欄。**直接使用 container-title 欄位的值**（與 conf_nam 填相同內容）；若無則留空字串
-- pp: 起迄頁次，如 "45-67"，若無則留空字串
+- pp: 起迄頁次，格式規則與期刊論文的 pp 完全相同（起迄用半形連字號 "45-67"；單頁或文章編號只填一個值，不可湊成區間），若無則留空字串
 - citelist: 收錄資料庫陣列，同期刊論文選項，若確認未收錄任何資料庫填 ["0"]，若不確定則填 []
 - citetpe_rem: 收錄資料庫其他說明，若無則留空字串
 - isbn_num: 論文集 ISBN 號碼。**若輸入中有 ISBN 欄位，直接使用其值**；若無則留空字串
@@ -144,12 +172,20 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 
 // ── ORCID 被動追蹤 ───────────────────────────────────────
 
+// 升級時清除舊版留在使用者端的員工編號相關資料（個資移除）
+async function purgeLegacyEmployeeData() {
+  try { await chrome.storage.local.remove(['savedEmpId']); } catch {}
+  try { await chrome.storage.sync.remove(['customEmpOrcidMap']); } catch {}
+}
+
 chrome.runtime.onInstalled.addListener(() => {
+  purgeLegacyEmployeeData();
   chrome.alarms.create('orcidCheck', { periodInMinutes: 1440 });
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  purgeLegacyEmployeeData();
   const alarm = await chrome.alarms.get('orcidCheck');
   if (!alarm) chrome.alarms.create('orcidCheck', { periodInMinutes: 1440 });
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
@@ -175,23 +211,10 @@ chrome.notifications.onClicked.addListener(() => {
 });
 
 async function checkOrcidWorks() {
-  let { orcidId, scholarId, orcidKnown = [], savedEmpId } =
-    await chrome.storage.local.get(['orcidId', 'scholarId', 'orcidKnown', 'savedEmpId']);
+  const { orcidId, scholarId, orcidKnown = [] } =
+    await chrome.storage.local.get(['orcidId', 'scholarId', 'orcidKnown']);
   if (!orcidId) return;
-
-  // scholarId 遺失時從 scholar_lookup.json 補回
-  if (!scholarId) {
-    const sl = await getScholarLookup().catch(() => ({}));
-    if (savedEmpId && sl[savedEmpId]?.scholarId) {
-      // 有員工編號：直接查
-      scholarId = sl[savedEmpId].scholarId;
-    } else if (orcidId) {
-      // 沒有員工編號：用 ORCID 反查
-      const match = Object.values(sl).find(v => v.orcid === orcidId);
-      if (match?.scholarId) scholarId = match.scholarId;
-    }
-    if (scholarId) await chrome.storage.local.set({ scholarId });
-  }
+  // scholarId 由使用者貼上的 AH 學者頁網址解析而來；沒有就只跳過 AH 比對，不做任何反查
 
   const works = await fetchOrcidWorks(orcidId);
   if (!works) return;
@@ -558,33 +581,82 @@ function parseOaiDc(doc, handle, origin) {
 }
 
 
-// ── 員工編號 → ORCID 對應表（懶載入，只讀一次）─────────────
-let _empOrcidLookup = null;
+// ── 身分驗證／解析（取代原先的員編對照表）──────────────────
+// 原本以 data/scholar_lookup.json、data/employee_orcid.json（含員工編號、姓名、ORCID 對照）
+// 查詢使用者身分，有個資疑慮，已整批移除。現在改由使用者自行輸入 ORCID 與 AH 學者頁網址。
 
-async function getEmpOrcidLookup() {
-  if (_empOrcidLookup) return _empOrcidLookup;
-  try {
-    const res = await fetch(chrome.runtime.getURL('data/employee_orcid.json'));
-    _empOrcidLookup = await res.json();
-  } catch {
-    _empOrcidLookup = {};
+// ORCID 格式 + 最後一碼 checksum（ISO 7064 MOD 11-2）驗證
+function validateOrcid(raw) {
+  const id = String(raw || '').trim().replace(/^https?:\/\/orcid\.org\//i, '');
+  if (!/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(id)) {
+    return { ok: false, error: 'ORCID 格式須為 0000-0000-0000-000X（16 碼，最後一碼可為 X）' };
   }
-  return _empOrcidLookup;
+  const digits = id.replace(/-/g, '');
+  let total = 0;
+  for (let i = 0; i < 15; i++) total = (total + Number(digits[i])) * 2;
+  const expected = (12 - (total % 11)) % 11;
+  const checkChar = expected === 10 ? 'X' : String(expected);
+  if (digits[15].toUpperCase() !== checkChar) {
+    return { ok: false, error: 'ORCID 檢核碼不正確，請確認是否輸入錯誤' };
+  }
+  return { ok: true, orcidId: id };
 }
 
-
-// ── Scholar lookup（員編 → scholarId + orcid + 姓名 + 系所）──
-let _scholarLookup = null;
-
-async function getScholarLookup() {
-  if (_scholarLookup) return _scholarLookup;
-  try {
-    const res = await fetch(chrome.runtime.getURL('data/scholar_lookup.json'));
-    _scholarLookup = await res.json();
-  } catch {
-    _scholarLookup = {};
+// 從 AH 學者頁網址解析 scholarId；網域／路徑／id 格式任一不符就拒絕，不送出請求
+function parseAhScholarUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return { ok: false, error: '請貼上 AH 學者頁網址' };
+  let u;
+  try { u = new URL(s); } catch { return { ok: false, error: '網址格式不正確，請直接從瀏覽器網址列複製' }; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    return { ok: false, error: '網址必須是 http(s) 連結' };
   }
-  return _scholarLookup;
+  if (u.hostname.toLowerCase() !== 'ah.lib.nccu.edu.tw') {
+    return { ok: false, error: `網域必須是 ah.lib.nccu.edu.tw（目前為 ${u.hostname}）` };
+  }
+  if (u.pathname.replace(/\/+$/, '') !== '/scholar') {
+    return { ok: false, error: `路徑必須是 /scholar（目前為 ${u.pathname}）` };
+  }
+  const id = u.searchParams.get('id') || '';
+  if (!/^\d+$/.test(id)) {
+    return { ok: false, error: '網址中的 id 參數必須是純數字' };
+  }
+  return { ok: true, scholarId: id };
+}
+
+// 取 ORCID 公開資料中的姓名（供使用者確認是自己的 ORCID）
+async function fetchOrcidPersonName(orcidId) {
+  try {
+    const res = await fetch(`https://pub.orcid.org/v3.0/${orcidId}/person`, {
+      headers: { Accept: 'application/json' }
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    const given  = data?.name?.['given-names']?.value || '';
+    const family = data?.name?.['family-name']?.value || '';
+    const credit = data?.name?.['credit-name']?.value || '';
+    return (credit || [given, family].filter(Boolean).join(' ')).trim();
+  } catch { return ''; }
+}
+
+// 取 AH 學者頁上的學者姓名（供使用者確認是自己的學者頁）
+async function fetchAhScholarName(scholarId) {
+  try {
+    const res = await fetch(
+      `https://ah.lib.nccu.edu.tw/scholar?id=${encodeURIComponent(scholarId)}&title=items&subtitle=all`,
+      { headers: { Accept: 'text/html' } }
+    );
+    if (!res.ok) return '';
+    const html = await res.text();
+    const decode = s => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+                         .replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+                         .replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ').trim();
+    const h = html.match(/<h[12][^>]*>([^<]{1,80})<\/h[12]>/i);
+    if (h) return decode(h[1]);
+    const t = html.match(/<title[^>]*>([^<]{1,120})<\/title>/i);
+    if (t) return decode(t[1]).replace(/\s*[-|｜–]\s*(?:政治大學|NCCU|學術影響力).*$/, '').trim();
+    return '';
+  } catch { return ''; }
 }
 
 
@@ -723,31 +795,32 @@ async function annotateAhStatus(newWorks, ahItems) {
 // 監聽來自 popup.js 的訊息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
-  // ORCID 反查 scholarId（無員工編號時使用）
-  if (message.action === 'lookupScholarIdByOrcid') {
+  // 驗證並解析使用者自行輸入的 ORCID 與 AH 學者頁網址，回傳姓名供使用者確認後才存檔
+  if (message.action === 'resolveIdentity') {
     (async () => {
-      const sl = await getScholarLookup().catch(() => ({}));
-      const match = Object.values(sl).find(v => v.orcid === message.orcid);
-      sendResponse(match ? { scholarId: match.scholarId } : {});
-    })();
-    return true;
-  }
+      const result = { ok: false, errors: [] };
 
-  // 員工編號查 ORCID + scholarId（scholar_lookup 優先，再查 employee_orcid.json，最後查自訂對應表）
-  if (message.action === 'lookupOrcidByEmpId') {
-    (async () => {
-      const sl = await getScholarLookup().catch(() => ({}));
-      if (sl[message.empId]) {
-        const entry = sl[message.empId];
-        sendResponse({ orcid: entry.orcid || null, scholarId: entry.scholarId || null, name: entry.name, dept: entry.dept });
-        return;
+      const o = validateOrcid(message.orcid);
+      if (!o.ok) result.errors.push(o.error);
+      else result.orcidId = o.orcidId;
+
+      let ah = null;
+      if (message.ahUrl) {
+        ah = parseAhScholarUrl(message.ahUrl);
+        if (!ah.ok) result.errors.push(ah.error);
+        else result.scholarId = ah.scholarId;
       }
-      // fallback：舊版 employee_orcid.json（只有 ORCID）
-      const legacy = await getEmpOrcidLookup().catch(() => ({}));
-      if (legacy[message.empId]) { sendResponse({ orcid: legacy[message.empId], scholarId: null }); return; }
-      // fallback：使用者手動存的自訂對應表
-      const { customEmpOrcidMap = {} } = await chrome.storage.sync.get('customEmpOrcidMap');
-      sendResponse({ orcid: customEmpOrcidMap[message.empId] || null, scholarId: null });
+
+      if (result.errors.length) { sendResponse(result); return; }
+
+      const [orcidName, ahName] = await Promise.all([
+        fetchOrcidPersonName(result.orcidId),
+        result.scholarId ? fetchAhScholarName(result.scholarId) : Promise.resolve('')
+      ]);
+      result.orcidName = orcidName;
+      result.ahName    = ahName;
+      result.ok        = true;
+      sendResponse(result);
     })();
     return true;
   }
@@ -1191,7 +1264,8 @@ async function fetchJournalUrlFromOpenAlex(journalName) {
 
 // OpenAI 呼叫（純文字模式與 DOI 確認後共用）
 async function callOpenAI(text) {
-  const apiKey = self._AK;
+  const apiKey = await getAiApiKey();
+  if (!apiKey) throw new Error('尚未設定 AI API Key，請在側邊面板的「AI 設定」中輸入後再試。');
 
   // 若文字中無 _journal_url，試用期刊名查 OpenAlex 補上
   if (!/^_journal_url:/m.test(text)) {
@@ -1204,25 +1278,29 @@ async function callOpenAI(text) {
     }
   }
 
-  const openaiRes = await fetch('https://www.myai168.com/tw/api/openai/v1/chat/completions', {
+  const payload = {
+    model: CONFIG.ai.model,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user',   content: text }
+    ]
+  };
+  if (CONFIG.ai.maxCompletionTokens != null) payload.max_completion_tokens = CONFIG.ai.maxCompletionTokens;
+  if (CONFIG.ai.temperature != null)         payload.temperature           = CONFIG.ai.temperature;
+  if (CONFIG.ai.topP != null)                payload.top_p                 = CONFIG.ai.topP;
+
+  const openaiRes = await fetch(CONFIG.ai.endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model: 'gpt-5.4-nano',
-      max_completion_tokens: 4000,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user',   content: text }
-      ]
-    })
+    body: JSON.stringify(payload)
   });
 
   if (!openaiRes.ok) {
-    const err = await openaiRes.json();
-    throw new Error(`OpenAI API 錯誤：${err.error?.message || openaiRes.status}`);
+    const err = await openaiRes.json().catch(() => ({}));
+    throw new Error(`AI API 錯誤：${err.error?.message || openaiRes.status}`);
   }
 
   const data = await openaiRes.json();
@@ -1303,21 +1381,39 @@ async function callOpenAI(text) {
             a.sta_ut_nam.trim() === a.sta_chi.trim()) {
           a.sta_ut_nam = '';
         }
-        // 去除開頭的大學/學院名稱（中文或英文）
+        // 去除開頭的大學/學院名稱（中文或英文），保留次級單位
         if (a.sta_ut_nam) {
           a.sta_ut_nam = a.sta_ut_nam
             .replace(/^[一-鿿]{2,}(?:大學|學院|大學院)[,，\s]*/u, '')
             .replace(/^[\w\s\-'']{5,}(?:University|College|Institute|School)[,，\s]*/i, '')
             .trim();
         }
-        // 英文系所名 → 政大中文縮寫（只在沒有 CJK 字元時套用）
-        if (a.sta_ut_nam && !/[一-鿿]/.test(a.sta_ut_nam)) {
+        // 英文系所名 → 政大中文簡稱。
+        // 預設關閉（CONFIG.affiliation.nccuDeptAbbrev=false）：以文稿印出的單位為準，不翻譯、不縮寫。
+        // 開啟時也只套用在「該筆單位文字本身就指明政治大學」的作者，避免把外校作者
+        // （如台大資工 Department of Computer Science and Information Engineering）誤標成政大系所。
+        if (CONFIG.affiliation.nccuDeptAbbrev &&
+            a.sta_ut_nam && !/[一-鿿]/.test(a.sta_ut_nam) && _NCCU_RE.test(a.sta_ut_nam)) {
           for (const [re, zh] of _NCCU_DEPT_MAP) {
             if (re.test(a.sta_ut_nam)) { a.sta_ut_nam = zh; break; }
           }
         }
         return a;
       });
+    }
+    // ── 起迄頁次正規化（破折號統一、單頁不湊區間）──────────
+    if (parsed.pp       != null) parsed.pp       = normalizePages(parsed.pp);
+    if (parsed.page_num != null) parsed.page_num = normalizePages(parsed.page_num);
+
+    // ── 期刊出版國：改由程式確定性決定，AI 的猜測一律丟棄 ──
+    // 期刊論文（03）才有 nat_cod/nat_tpe 的「期刊出版國」語意；
+    // 04/06/12 的 nat_cod 是「舉辦國」，不在此處覆寫。
+    if (parsed.publ_tpe === '03') {
+      const jc = text.match(/^_journal_country:\s*(\S+)/m)?.[1]
+              || text.match(/"_journal_country"\s*:\s*"([^"]+)"/)?.[1]
+              || '';
+      parsed.nat_cod = jc;
+      parsed.nat_tpe = jc ? (jc === 'TWN' ? '1' : '2') : '';
     }
     // _journal_url 強制覆蓋：OpenAlex 查到的期刊 URL 優先序最高，AI 若沒用就補回來
     const journalUrlLine = text.match(/^_journal_url: (.+)$/m)?.[1]?.trim();
@@ -1394,8 +1490,12 @@ function formatDataCiteData(attr, doi, openAlex = null, s2 = null) {
   if (creators.length) {
     const authors = creators.map((c, i) => {
       const name  = c.name || [c.givenName, c.familyName].filter(Boolean).join(' ');
-      const affil = c.affiliation?.[0]?.name
-        || openAlex?.authorships?.[i]?.institutions?.[0]?.display_name || '';
+      // 以文稿原文單位為準（DataCite affiliation / OpenAlex raw_affiliation_strings），
+      // 不使用 OpenAlex 正規化後的機構名稱
+      const affil = pickManuscriptAffiliation(manuscriptAffiliations(
+        { affiliation: c.affiliation || [] },
+        openAlex?.authorships?.[i]
+      ));
       return affil ? `${name}（${affil}）` : name;
     });
     lines.push(`作者：${authors.join('；')}`);
@@ -1408,7 +1508,8 @@ function formatDataCiteData(attr, doi, openAlex = null, s2 = null) {
   if (attr.container?.volume) lines.push(`卷：${attr.container.volume}`);
   if (attr.container?.issue)  lines.push(`期：${attr.container.issue}`);
   const sp = attr.container?.firstPage, ep = attr.container?.lastPage;
-  if (sp && ep) lines.push(`頁碼：${sp}-${ep}`);
+  const pagesTxt = normalizePages(sp && ep ? `${sp}-${ep}` : (sp || ep || ''));
+  if (pagesTxt) lines.push(`頁碼：${pagesTxt}`);
   if (attr.language)  lines.push(`語言：${attr.language}`);
   if (attr.publisher) lines.push(`出版商：${attr.publisher}`);
 
@@ -1876,6 +1977,154 @@ function reconstructAbstract(invertedIndex) {
 
 
 // 把 CrossRef + OpenAlex + Semantic Scholar + Unpaywall 整理成 JSON 給 AI 看
+// ── 作者單位（以文稿原文為準）──────────────────────────────
+// 收集某位作者在文稿上印出的所有 affiliation 原文字串，去重後回傳。
+function manuscriptAffiliations(crAuthor = {}, oaAuthorship = null) {
+  const out = [];
+  const seen = new Set();
+  const push = s => {
+    const t = (s || '').replace(/\s+/g, ' ').trim();
+    if (!t) return;
+    const key = t.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
+  (crAuthor.affiliation || []).forEach(x => push(x?.name));
+  (oaAuthorship?.raw_affiliation_strings || []).forEach(push);
+  return out;
+}
+
+// 次級單位（系、所、中心、實驗室…）關鍵字：只有含次級單位的 affiliation 才填得出 sta_ut_nam
+const _SUBUNIT_RE = /\b(?:department|dept\.?|institute|school of|faculty of|division|laborator|center|centre|research\s+center|graduate\s+(?:institute|program|school)|program)\b|[系所]\b|研究所|研究中心|中心|實驗室|學系/i;
+const _NCCU_RE    = /National\s+Chengchi\s+University|國立政治大學|政治大學|\bNCCU\b/i;
+
+// 從同一位作者的多筆文稿單位中挑一筆填入表單：
+// ①含政治大學者優先（本系統為政大論著目錄，教師填的是自己的政大單位）
+// ②否則取第一筆含次級單位者
+// ③否則取第一筆（通常只有校名，AI 端會依規則④留空）
+function pickManuscriptAffiliation(list = []) {
+  if (!list.length) return '';
+  return list.find(s => _NCCU_RE.test(s) && _SUBUNIT_RE.test(s))
+      || list.find(s => _NCCU_RE.test(s))
+      || list.find(s => _SUBUNIT_RE.test(s))
+      || list[0];
+}
+
+// ── 起迄頁次正規化 ────────────────────────────────────────
+// 來源可能是 "61-73"、"61–73"(en dash)、"61—73"(em dash)、"pp. 61-73"、"61"、"6173"(文章編號)
+// 一律輸出半形連字號格式；單頁／文章編號／起迄相同時只輸出一個數字，不硬湊區間。
+function normalizePages(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  s = s
+    .replace(/^(?:pp?\.?|頁次?|頁)\s*/i, '')           // 去開頭 pp. / p. / 頁
+    .replace(/[‐-―−﹘﹣－~～]/g, '-') // 各式破折號／波浪號 → 半形連字號
+    .replace(/\s*-\s*/g, '-')                           // 連字號前後空白
+    .replace(/\s+/g, ' ')
+    .replace(/[-,;]+$/, '')                             // 尾端殘留的分隔符
+    .trim();
+  if (!s) return '';
+  const m = s.match(/^(\S+)-(\S+)$/);
+  if (m) {
+    if (m[1] === m[2]) return m[1];                     // 61-61 → 61
+    // 縮寫式區間 "61-3" → "61-63"
+    if (/^\d+$/.test(m[1]) && /^\d+$/.test(m[2]) && m[2].length < m[1].length) {
+      return `${m[1]}-${m[1].slice(0, m[1].length - m[2].length) + m[2]}`;
+    }
+    return `${m[1]}-${m[2]}`;
+  }
+  return s;                                             // 單頁或文章編號，原樣保留
+}
+
+// ── 期刊出版國（確定性判斷，查不到就留空）────────────────
+// 出版商 → 註冊／總部所在國 ISO 3 碼。只列可明確對應者；查不到一律不給值。
+const PUBLISHER_COUNTRY = [
+  [/\bmdpi\b/i,                                             'CHE'],
+  [/frontiers\s+media/i,                                    'CHE'],
+  [/\bkarger\b/i,                                           'CHE'],
+  [/elsevier|\bnorth-holland\b/i,                           'NLD'],
+  [/\bbrill\b|\bios\s+press\b/i,                            'NLD'],
+  [/springer\s+nature|springer(?:-|\s)?verlag|\bspringer\b/i,'DEU'],
+  [/de\s+gruyter|thieme/i,                                  'DEU'],
+  [/nature\s+(?:portfolio|publishing)/i,                    'GBR'],
+  [/\bwiley\b|john\s+wiley/i,                               'USA'],
+  [/taylor\s*&?\s*francis|\broutledge\b|informa/i,          'GBR'],
+  [/\bsage\b/i,                                             'USA'],
+  [/oxford\s+university\s+press/i,                          'GBR'],
+  [/cambridge\s+university\s+press/i,                       'GBR'],
+  [/\bemerald\b/i,                                          'GBR'],
+  [/\bhindawi\b/i,                                          'GBR'],
+  [/\bbmj\b|british\s+medical/i,                            'GBR'],
+  [/royal\s+society/i,                                      'GBR'],
+  [/\biop\s+publishing\b|institute\s+of\s+physics\s+publishing/i, 'GBR'],
+  [/\bieee\b|institute\s+of\s+electrical/i,                 'USA'],
+  [/association\s+for\s+computing\s+machinery|\bacm\b/i,    'USA'],
+  [/\bplos\b|public\s+library\s+of\s+science/i,             'USA'],
+  [/american\s+(?:chemical|physical|medical|psychological|mathematical|economic|political)/i, 'USA'],
+  [/american\s+institute\s+of\s+physics|\baip\s+publishing\b/i, 'USA'],
+  [/\bjstor\b|university\s+of\s+chicago\s+press/i,          'USA'],
+  [/\bmit\s+press\b|princeton\s+university\s+press|harvard\s+university\s+press/i, 'USA'],
+  [/\bapa\b|\baaas\b|\bnejm\b|massachusetts\s+medical/i,    'USA'],
+  [/\bjohns?\s+hopkins\b|duke\s+university\s+press/i,       'USA'],
+  [/world\s+scientific/i,                                   'SGP'],
+  // 台灣的判斷放在中國之前，避免「China Medical University（台灣的中國醫藥大學）」之類被誤判
+  [/\bairiti\b|華藝|國立|中央研究院|academia\s+sinica|\btaiwan\b|台灣|臺灣/i, 'TWN'],
+  [/\bj-?stage\b|日本|\bjapan(?:ese)?\b/i,                   'JPN'],
+  // 中國大陸：只比對明確的學會／出版社名稱，不比對單獨的 China / Chinese（避免台灣校名誤判）
+  [/\bchinese\s+(?:academy|physical|chemical|medical\s+association|society|optical)\b|科学出版社|高等教育出版社|\bscience\s+press\b|higher\s+education\s+press/i, 'CHN'],
+  [/\bcsiro\b/i,                                            'AUS'],
+  [/\bedp\s+sciences\b/i,                                   'FRA'],
+];
+
+function publisherCountry(publisher) {
+  const p = (publisher || '').trim();
+  if (!p) return '';
+  for (const [re, iso3] of PUBLISHER_COUNTRY) if (re.test(p)) return iso3;
+  return '';
+}
+
+// CrossRef publisher-location 常見國名 / 城市 → ISO 3 碼（全小寫 key）
+const COUNTRY_NAME_TO_ISO3 = {
+  'taiwan': 'TWN', 'taiwan, roc': 'TWN', 'republic of china': 'TWN', '台灣': 'TWN', '臺灣': 'TWN',
+  'usa': 'USA', 'u.s.a.': 'USA', 'united states': 'USA', 'united states of america': 'USA', 'us': 'USA',
+  'uk': 'GBR', 'u.k.': 'GBR', 'united kingdom': 'GBR', 'england': 'GBR', 'scotland': 'GBR', 'great britain': 'GBR',
+  'netherlands': 'NLD', 'the netherlands': 'NLD', 'holland': 'NLD',
+  'germany': 'DEU', 'deutschland': 'DEU', 'france': 'FRA', 'switzerland': 'CHE', 'suisse': 'CHE',
+  'japan': 'JPN', 'china': 'CHN', "people's republic of china": 'CHN', 'prc': 'CHN',
+  'hong kong': 'HKG', 'macau': 'MAC', 'macao': 'MAC',
+  'korea': 'KOR', 'south korea': 'KOR', 'republic of korea': 'KOR',
+  'singapore': 'SGP', 'australia': 'AUS', 'new zealand': 'NZL', 'canada': 'CAN',
+  'italy': 'ITA', 'italia': 'ITA', 'spain': 'ESP', 'españa': 'ESP', 'portugal': 'PRT',
+  'belgium': 'BEL', 'austria': 'AUT', 'sweden': 'SWE', 'norway': 'NOR', 'denmark': 'DNK',
+  'finland': 'FIN', 'poland': 'POL', 'czech republic': 'CZE', 'czechia': 'CZE',
+  'russia': 'RUS', 'russian federation': 'RUS', 'india': 'IND', 'brazil': 'BRA',
+  'mexico': 'MEX', 'israel': 'ISR', 'turkey': 'TUR', 'türkiye': 'TUR',
+  'ireland': 'IRL', 'greece': 'GRC', 'hungary': 'HUN', 'romania': 'ROU',
+  'south africa': 'ZAF', 'egypt': 'EGY', 'thailand': 'THA', 'vietnam': 'VNM',
+  'malaysia': 'MYS', 'indonesia': 'IDN', 'philippines': 'PHL', 'saudi arabia': 'SAU',
+  'united arab emirates': 'ARE', 'chile': 'CHL', 'argentina': 'ARG', 'colombia': 'COL',
+};
+
+// 只收錄不會與其他國家混淆的出版城市
+const CITY_TO_ISO3 = {
+  'taipei': 'TWN', 'taichung': 'TWN', 'kaohsiung': 'TWN', 'tainan': 'TWN', 'hsinchu': 'TWN',
+  '台北': 'TWN', '臺北': 'TWN',
+  'new york': 'USA', 'washington': 'USA', 'washington, dc': 'USA', 'boston': 'USA',
+  'cambridge, ma': 'USA', 'chicago': 'USA', 'philadelphia': 'USA', 'san francisco': 'USA',
+  'los angeles': 'USA', 'thousand oaks': 'USA', 'hoboken': 'USA', 'piscataway': 'USA',
+  'london': 'GBR', 'oxford': 'GBR', 'edinburgh': 'GBR', 'bristol': 'GBR', 'abingdon': 'GBR',
+  'amsterdam': 'NLD', 'leiden': 'NLD', 'dordrecht': 'NLD', 'rotterdam': 'NLD',
+  'berlin': 'DEU', 'heidelberg': 'DEU', 'munich': 'DEU', 'münchen': 'DEU', 'stuttgart': 'DEU',
+  'basel': 'CHE', 'zurich': 'CHE', 'zürich': 'CHE', 'geneva': 'CHE', 'lausanne': 'CHE',
+  'paris': 'FRA', 'lyon': 'FRA', 'tokyo': 'JPN', 'osaka': 'JPN', 'kyoto': 'JPN',
+  'beijing': 'CHN', 'shanghai': 'CHN', 'seoul': 'KOR', 'singapore': 'SGP',
+  'vienna': 'AUT', 'wien': 'AUT', 'milan': 'ITA', 'milano': 'ITA', 'rome': 'ITA', 'roma': 'ITA',
+  'madrid': 'ESP', 'barcelona': 'ESP', 'copenhagen': 'DNK', 'stockholm': 'SWE', 'oslo': 'NOR',
+  'helsinki': 'FIN', 'brussels': 'BEL', 'dublin': 'IRL', 'warsaw': 'POL', 'moscow': 'RUS',
+  'toronto': 'CAN', 'montreal': 'CAN', 'ottawa': 'CAN', 'melbourne': 'AUS', 'sydney': 'AUS',
+};
+
 function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = null, inDblp = false, orcidDepts = {}, extraAbstract = '', taiwanJournals = {}) {
   const d = {};
 
@@ -1893,19 +2142,23 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
     d.ISBN = printEntry ? printEntry.value : d.ISBN[0];
   }
 
-  // 作者：CrossRef 機構優先，否則從 OpenAlex 補；ORCID dept 另存 orcid-dept 欄位
+  // 作者：一律以「文稿上實際印出的單位」為準。
+  // 來源優先序：CrossRef affiliation（即文稿 affiliation 區塊原文）
+  //           → OpenAlex raw_affiliation_strings（同樣是文稿原文）
+  // 不使用 OpenAlex institutions[].display_name（那是正規化後的機構名，非文稿原文）。
+  // ORCID Employment 只作為「完全沒有文稿單位」時的備援，存在 orcid-dept，優先序最低。
   if (work.author?.length) {
     d.author = work.author.map((a, i) => {
+      const affList = manuscriptAffiliations(a, openAlex?.authorships?.[i]);
       const obj = {
         given:         a.given  || '',
         family:        a.family || '',
-        affiliation:   a.affiliation?.[0]?.name
-                    || openAlex?.authorships?.[i]?.institutions?.[0]?.display_name
-                    || undefined,
+        affiliation:   pickManuscriptAffiliation(affList) || undefined,
         corresponding: a.corresponding
                     ?? openAlex?.authorships?.[i]?.is_corresponding
                     ?? undefined
       };
+      if (affList.length > 1) obj['affiliation-all'] = affList;
       if (orcidDepts[i]) {
         if (orcidDepts[i].dept) obj['orcid-dept'] = orcidDepts[i].dept;
         if (orcidDepts[i].org)  obj['orcid-org']  = orcidDepts[i].org;
@@ -1933,6 +2186,11 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
     const fp = openAlex?.biblio?.first_page, lp = openAlex?.biblio?.last_page;
     if (fp && lp) d.page = `${fp}-${lp}`;
     else if (fp)  d.page = fp;
+  }
+  // 頁次正規化：破折號統一為半形 "-"，起迄相同（如 MDPI 的文章編號 6173-6173）只留一個數字
+  if (d.page) {
+    const np = normalizePages(d.page);
+    if (np) d.page = np; else delete d.page;
   }
 
   // ── 摘要補強（CrossRef > OpenAlex > S2）────────────────
@@ -1977,10 +2235,39 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
     SR:'SUR',SZ:'SWZ',SE:'SWE',CH:'CHE',SY:'SYR',TW:'TWN',TJ:'TJK',TZ:'TZA',TH:'THA',
     TL:'TLS',TG:'TGO',TT:'TTO',TN:'TUN',TR:'TUR',TM:'TKM',UG:'UGA',UA:'UKR',AE:'ARE',
     GB:'GBR',US:'USA',UY:'URY',UZ:'UZB',VE:'VEN',VN:'VNM',YE:'YEM',ZM:'ZMB',ZW:'ZWE',
+    MO:'MAC',PR:'PRI',CD:'COD',CI:'CIV',BS:'BHS',BB:'BRB',GL:'GRL',PS:'PSE',MU:'MUS',
+    VA:'VAT',AG:'ATG',GM:'GMB',NE:'NER',SC:'SYC',
   };
+  // 判斷順序（全部為確定性來源，查不到就不給值，絕不預設 TWN）：
+  //   ① OpenAlex source.country_code（期刊註冊國）
+  //   ② ISSN 命中 Airiti ACI（TSSCI/THCI）清單 → 確定是台灣期刊
+  //   ③ CrossRef publisher-location 的國名／城市
+  //   ④ 出版商名稱對照表（PUBLISHER_COUNTRY，僅限可明確對應者）
   const _cc2 = (openAlex?.primary_location?.source?.country_code || '').toUpperCase();
-  const _cc3 = _iso2to3[_cc2] || '';
-  if (_cc3) d['_journal_country'] = _cc3;
+  let _cc3 = _iso2to3[_cc2] || '';
+  let _ccSrc = _cc3 ? 'openalex-source-country' : '';
+
+  if (!_cc3) {
+    const hit = (work.ISSN || []).some(issn => taiwanJournals[issn.replace(/-/g, '')]);
+    if (hit) { _cc3 = 'TWN'; _ccSrc = 'airiti-aci-issn'; }
+  }
+  if (!_cc3) {
+    const loc = (work['publisher-location'] || '').trim();
+    if (loc) {
+      const tail = loc.split(',').map(s => s.trim()).filter(Boolean).pop() || '';
+      const byName = COUNTRY_NAME_TO_ISO3[tail.toLowerCase()] || CITY_TO_ISO3[tail.toLowerCase()] || '';
+      if (byName) { _cc3 = byName; _ccSrc = 'crossref-publisher-location'; }
+    }
+  }
+  if (!_cc3) {
+    const byPub = publisherCountry(work.publisher);
+    if (byPub) { _cc3 = byPub; _ccSrc = 'publisher-name'; }
+  }
+
+  if (_cc3) {
+    d['_journal_country']     = _cc3;
+    d['_journal_country_src'] = _ccSrc;
+  }
 
   // ── 開放取用網址──────────────────────────────────────
   const oaUrl = unpaywall?.best_oa_location?.url_for_pdf

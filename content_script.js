@@ -35,7 +35,7 @@ function setSelect(name, value, optional = false) {
 }
 
 function setRadio(name, value, optional = false) {
-  if (value === undefined || value === null) {
+  if (value === undefined || value === null || value === '') {
     if (!optional) highlightManualByName(name);
     return;
   }
@@ -198,8 +198,9 @@ function fillSecondLayerJournal(data) {
   setText      ('pp',          data.pp);
   setCheckboxes('citelist',    data.citelist);
   setText      ('citetpe_rem', data.citetpe_rem,       true);
-  setRadio     ('nat_tpe',     data.nat_tpe,           true);
-  setSelect    ('nat_cod',     data.nat_cod,           true);
+  // 出版國查不到時刻意留空（不預設 TWN），標為橘色虛線提示人工選擇
+  setRadio     ('nat_tpe',     data.nat_tpe);
+  setSelect    ('nat_cod',     data.nat_cod);
   setRadio     ('pertpe_cod',  data.pertpe_cod,        true);
   setRadio     ('publ_type',   data.publ_type,         true);
   setText      ('url_addr',    data.url_addr,          true);

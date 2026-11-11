@@ -1,2 +1,15 @@
-# API key — 不上版控，請複製 config.example.js 為 config.js 並填入金鑰
+# API key — 不上版控，請改在側邊面板的「AI 設定」輸入（存 chrome.storage.local）
+# 舊版的 config.js 若仍存在，載入擴充功能時會自動搬進 storage，之後即可刪除此檔
 config.js
+
+# 個資：員工編號／姓名／ORCID／scholar_id 對照表，一律不得進版控
+e-personid.csv
+dump.csv
+data/scholar_lookup.json
+data/employee_orcid.json
+scripts/build-scholar-lookup.js
+
+# 任何含員編或個人對照的匯出檔
+*e-personid*
+*employee_orcid*
+*scholar_lookup*

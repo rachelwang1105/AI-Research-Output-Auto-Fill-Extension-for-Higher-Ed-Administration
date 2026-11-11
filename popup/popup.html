@@ -705,25 +705,60 @@
     <!-- 著作佇列 tab -->
     <div id="modeQueueContainer" class="hidden">
 
-      <!-- ORCID 追蹤設定 -->
-      <div class="orcid-block">
-        <div class="section-label">ORCID 追蹤設定</div>
-        <button class="btn-primary" id="btnAutoDetect" style="margin-top:0; font-size:12px;">
-          從政大系統自動帶入員編與 ORCID
-        </button>
-        <div id="empStatus" class="status-hint"></div>
-
-        <div class="or-divider">或手動設定</div>
-
-        <div class="key-row" style="margin-bottom:6px;">
-          <input type="text" id="empInput" placeholder="員工編號（如 123456）" maxlength="10"
-            style="font-family:inherit; font-variant-numeric:tabular-nums;" />
-          <button class="btn-sm" id="btnLookupOrcid">查 ORCID</button>
-        </div>
+      <!-- AI 設定 -->
+      <div class="orcid-block" style="margin-bottom:8px;">
+        <div class="section-label">AI 設定</div>
         <div class="key-row">
-          <input type="text" id="orcidInput" placeholder="0000-0001-2345-6789"
-            style="font-family:'Courier New',monospace;" />
+          <input type="password" id="apiKeyInput" placeholder="AI API Key"
+            style="font-family:'Courier New',monospace;" autocomplete="off" />
+          <button class="btn-sm" id="btnSaveKey">儲存</button>
         </div>
+        <div id="apiKeyStatus" class="status-hint">尚未設定</div>
+        <div class="input-hint">金鑰只存在你自己的瀏覽器（chrome.storage.local），不會上傳也不進版控</div>
+      </div>
+
+      <!-- 身分設定（ORCID 追蹤 + AH 學者頁）-->
+      <div class="orcid-block">
+        <div class="section-label">我的身分設定</div>
+
+        <div id="identityForm">
+          <div class="key-row" style="margin-bottom:6px;">
+            <input type="text" id="orcidInput" placeholder="我的 ORCID：0000-0000-0000-000X"
+              style="font-family:'Courier New',monospace;" />
+          </div>
+          <div class="key-row" style="margin-bottom:6px;">
+            <input type="text" id="ahUrlInput"
+              placeholder="我的 AH 學者頁網址（https://ah.lib.nccu.edu.tw/scholar?id=…）" />
+          </div>
+          <div class="input-hint" style="margin-bottom:6px;">
+            AH 網址怎麼找：在 AH（ah.lib.nccu.edu.tw）搜尋自己的名字，進入個人學者頁後，
+            直接複製瀏覽器網址列的網址貼過來。只需設定一次。
+          </div>
+          <button class="btn-primary" id="btnResolveIdentity"
+            style="margin-top:0; font-size:12px;">驗證並顯示解析結果</button>
+        </div>
+
+        <!-- 解析結果確認 -->
+        <div id="identityConfirm" class="hidden" style="margin-top:6px;">
+          <div class="confirm-paper" id="identityConfirmBox"></div>
+          <div class="input-hint" style="margin-top:4px;">請確認以上是你本人的資料，確認後才會存入</div>
+          <div class="key-row" style="margin-top:6px;">
+            <button class="btn-primary" id="btnIdentitySave"
+              style="margin-top:0; flex:1; font-size:12px;">確認是我，儲存</button>
+            <button class="btn-sm" id="btnIdentityCancel">取消</button>
+          </div>
+        </div>
+
+        <!-- 已儲存狀態 -->
+        <div id="identitySaved" class="hidden" style="margin-top:6px;">
+          <div class="confirm-paper" id="identitySavedBox"></div>
+          <div class="key-row" style="margin-top:6px;">
+            <button class="btn-sm" id="btnIdentityEdit" style="flex:1;">修改</button>
+            <button class="btn-danger" id="btnIdentityClear"
+              style="margin-top:0; flex:1; padding:6px; font-size:11px;">清除</button>
+          </div>
+        </div>
+
         <div id="orcidStatus" class="status-hint">尚未設定</div>
         <button class="btn-sm" id="btnCheckOrcid"
           style="margin-top:6px; width:100%; text-align:center;">立即檢查著作</button>
