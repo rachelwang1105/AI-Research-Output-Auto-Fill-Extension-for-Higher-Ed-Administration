@@ -2259,6 +2259,22 @@ function showConfirm(meta) {
   });
 }
 
+// 出版國顯示：標示來源可信度，讓使用者知道哪些需要複核
+function formatNatCod(data) {
+  if (data.publ_tpe !== '03') return '';
+  if (!data.nat_cod) return '⚠ 查無出版國，請在表單手動選擇';
+  const tpe = data.nat_tpe === '1' ? '國內' : data.nat_tpe === '2' ? '國外' : '未定';
+  const note = {
+    'openalex-issn-country':      'ISSN 登記國',
+    'openalex-society-name':      '主辦學會所在國',
+    'openalex-society-tld':       '⚠ 學會網域推導，請確認',
+    'taiwan-journal-issn':        '台灣期刊清單',
+    'crossref-publisher-location':'出版地',
+    'publisher-name':             '⚠ 出版商名稱推導，請確認',
+  }[data._nat_cod_src] || (data._nat_cod_confirm ? '⚠ 請確認' : '');
+  return `${data.nat_cod}（${tpe}）${note ? '・' + note : ''}`;
+}
+
 function showPreview(data) {
   hide(sectionLoading);
   hide(sectionError);
@@ -2271,6 +2287,7 @@ function showPreview(data) {
     { key: '語言',   val: formatLang(data.lang_cod),                cls: 'code' },
     { key: '期刊',   val: data.jnl_nam,                             cls: '' },
     { key: '卷期頁', val: formatVol(data),                          cls: '' },
+    { key: '出版國', val: formatNatCod(data),                       cls: data._nat_cod_confirm ? 'warn' : 'code' },
     { key: 'DOI',    val: data.doi,                                 cls: 'code' },
     { key: '升等',   val: data.promote === '0' ? '非升等論著' : '⚠ 請確認',
                      cls: data.promote === '0' ? '' : 'warn' },

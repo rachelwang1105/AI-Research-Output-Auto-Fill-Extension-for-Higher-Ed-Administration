@@ -91,7 +91,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - citelist: 收錄資料庫陣列，從以下選符合的：0=none（未收錄任何資料庫）, a=AHCI, b=SSCI, c=SCIE, d=EI, e=TSSCI, f=MLA, g=CSA, h=LLBA, i=ACM, j=DBLP, k=IEEE, l=CITESEEN, m=SCI, n=THCI, p=CSSCI, q=THCI Core, r=SCOPUS, x=other。**若輸入中有 _known_dbs 欄位，必須將其所有值原封不動納入 citelist，不可遺漏任何一個**（程式已自動判斷 TSSCI/THCI/THCI Core/SCOPUS/WoS/IEEE/ACM/DBLP 等，代碼已正確對應）。**若輸入中有 _wos_subtype 欄位，表示 WoS 子資料庫已由程式依 OpenAlex 主題領域推導，對應代碼已在 _known_dbs 中，請納入 citelist，並將 _wos_subtype 的值（如「SSCI（主題領域推導，請確認）」）直接寫入 citetpe_rem**。若輸入中有 _wos: true（無 _wos_subtype），表示期刊確認收錄於 WoS 但子資料庫未知，請將 "【需確認 WoS 子資料庫：SSCI/SCIE/AHCI 擇一勾選】" 寫入 citetpe_rem，citelist 中不自行填入 a/b/c。EI 若未出現在 _known_dbs，不確定則不填
 - citetpe_rem: 收錄資料庫其他說明，若無則留空字串
 - nat_cod: 期刊出版國 ISO 3碼。**只有一條規則：若輸入有 _journal_country 欄位，填入該值；若沒有該欄位，一律填空字串 ""。**
-  **嚴格禁止推測**：不可從 publisher 名稱、publisher-location、期刊名稱、作者機構、作者國籍、語言或任何其他線索推斷出版國。出版國查不到時由使用者在表單上手動選擇，**絕對不可預設為 TWN**（填 TWN 會讓論著被誤判為國內期刊）。程式端已先用「OpenAlex 期刊註冊國 → Airiti ACI 台灣期刊清單 → CrossRef publisher-location → 出版商對照表」四層確定性判斷，判得出來才會給 _journal_country。
+  **嚴格禁止推測**：不可從 publisher 名稱、publisher-location、期刊名稱、作者機構、作者國籍、語言或任何其他線索推斷出版國。出版國查不到時由使用者在表單上手動選擇，**絕對不可預設為 TWN**（填 TWN 會讓論著被誤判為國內期刊）。程式端已先用「OpenAlex ISSN 登記國 → 期刊主辦學會所在國 → 台灣期刊 ISSN 清單 → CrossRef publisher-location → 出版商對照表」多層確定性判斷，判得出來才會給 _journal_country。
 - nat_tpe: "1"=國內期刊（nat_cod 為 "TWN" 時），"2"=國外期刊（nat_cod 為其他非空值時）。**nat_cod 為空字串時，nat_tpe 也必須填空字串 ""**，不可猜測
 - pertpe_cod: 論文性質："1"=ARTICLE, "2"=REVIEW, "3"=LETTER, "4"=NOTE
 - publ_type: 出版形式："0"=紙本期刊, "1"=電子期刊, "2"=紙本及電子。判斷方式：若輸入 JSON 有 "issn-type" 欄位，檢查其陣列中是否同時含 type="print" 與 type="electronic" → 填 "2"；只含 type="electronic" → 填 "1"；只含 type="print" → 填 "0"；若無 "issn-type" 欄位或陣列為空 → 預設填 "2"
@@ -1219,12 +1219,13 @@ async function fetchMetadataOnly(doi) {
   const htmlUrl = unpaywallData?.best_oa_location?.url_for_landing_page
                || unpaywallData?.best_oa_location?.url
                || `https://doi.org/${cleanDoi}`;
-  const [extraAbstract, preJournalUrl] = await Promise.all([
+  const [extraAbstract, preJournalUrl, oaSource] = await Promise.all([
     hasAbstractNow ? Promise.resolve('') : fetchAbstractFromHtml(htmlUrl),
     fetchJournalUrlFromOpenAlex(work['container-title']?.[0] || ''),
+    fetchOpenAlexSourceCountry(work.ISSN || []),   // 期刊 ISSN 登記國（出版國第 ① 層）
   ]);
 
-  let formattedText = formatCrossrefData(work, cleanDoi, openAlexData, s2Data, unpaywallData, inDblp, orcidDepts, extraAbstract, taiwanJournals);
+  let formattedText = formatCrossrefData(work, cleanDoi, openAlexData, s2Data, unpaywallData, inDblp, orcidDepts, extraAbstract, taiwanJournals, oaSource);
   if (preJournalUrl && !/^_journal_url:/m.test(formattedText)) {
     formattedText = `_journal_url: ${preJournalUrl}\n` + formattedText;
   }
@@ -1414,6 +1415,14 @@ async function callOpenAI(text) {
               || '';
       parsed.nat_cod = jc;
       parsed.nat_tpe = jc ? (jc === 'TWN' ? '1' : '2') : '';
+      // 出版國若來自第 ④ 層（出版商名稱推導），標記為需人工確認，
+      // 表單上會以橘色虛線呈現，提醒秘書核對，而非當成已確定的值
+      const needConfirm = /"_journal_country_confirm"\s*:\s*true/.test(text)
+                       || /^_journal_country_confirm:\s*true/m.test(text);
+      const src = text.match(/"_journal_country_src"\s*:\s*"([^"]+)"/)?.[1]
+               || text.match(/^_journal_country_src:\s*(\S+)/m)?.[1] || '';
+      if (jc && src)         parsed._nat_cod_src     = src;
+      if (jc && needConfirm) parsed._nat_cod_confirm = true;
     }
     // _journal_url 強制覆蓋：OpenAlex 查到的期刊 URL 優先序最高，AI 若沒用就補回來
     const journalUrlLine = text.match(/^_journal_url: (.+)$/m)?.[1]?.trim();
@@ -1446,16 +1455,34 @@ async function fetchOpenAlexData(doi) {
 
 // ── OpenAlex Sources（期刊 ISSN → indexed_in：Scopus / WoS 等）──
 // 供純文字模式補查收錄資料庫使用；DOI 模式由 fetchOpenAlexData 的 primary_location 覆蓋
+// 注意：work 物件裡的 primary_location.source 是 OpenAlex 的精簡版物件，**不含 country_code**，
+// 必須另外打 /sources 端點才拿得到期刊的 ISSN 登記國（書目學上的「出版國」）。
 async function fetchOpenAlexSource(issn) {
   try {
     const res = await fetch(
+      // 注意：`indexed_in` 不是 /sources 的合法 select 欄位（會回 400），
+      // 這是舊版留下的 bug，導致本函式一直回傳 null。OpenAlex 目前也已不在 /sources
+      // 提供 Scopus/WoS 收錄旗標，純文字路徑的 Scopus/WoS 判斷因此無法靠此端點，
+      // 需另尋來源（DOI 路徑用的是 work.primary_location.source.indexed_in，不受影響）。
       `https://api.openalex.org/sources?filter=issn:${encodeURIComponent(issn)}&per-page=1` +
-      `&select=indexed_in,topics&mailto=nccu-plugin`,
+      `&select=country_code,display_name,topics,societies&mailto=nccu-plugin`,
     );
     if (!res.ok) return null;
     const data = await res.json();
     return data.results?.[0] || null;
   } catch { return null; }
+}
+
+// 依序試每個 ISSN：優先回傳有 country_code 的 source；
+// 都沒有時回傳第一筆查到的（其 societies 欄位仍可用於推導出版國）
+async function fetchOpenAlexSourceCountry(issns = []) {
+  let first = null;
+  for (const issn of [].concat(issns).filter(Boolean).slice(0, 3)) {
+    const src = await fetchOpenAlexSource(issn);
+    if (src?.country_code) return src;
+    if (src && !first) first = src;
+  }
+  return first;
 }
 
 
@@ -2084,6 +2111,45 @@ function publisherCountry(publisher) {
   return '';
 }
 
+// 國碼頂級網域 → ISO 3 碼。只收錄確實代表國家的 ccTLD；
+// 刻意排除被當作一般用途的 .io / .co / .me / .tv / .cc / .eu
+const CCTLD_TO_ISO3 = {
+  tw:'TWN', jp:'JPN', cn:'CHN', kr:'KOR', hk:'HKG', mo:'MAC', sg:'SGP',
+  uk:'GBR', de:'DEU', fr:'FRA', nl:'NLD', ch:'CHE', at:'AUT', be:'BEL',
+  it:'ITA', es:'ESP', pt:'PRT', se:'SWE', no:'NOR', dk:'DNK', fi:'FIN',
+  pl:'POL', cz:'CZE', hu:'HUN', ro:'ROU', gr:'GRC', ie:'IRL', ru:'RUS',
+  us:'USA', ca:'CAN', mx:'MEX', br:'BRA', ar:'ARG', cl:'CHL',
+  au:'AUS', nz:'NZL', in:'IND', id:'IDN', th:'THA', vn:'VNM', my:'MYS',
+  ph:'PHL', tr:'TUR', il:'ISR', za:'ZAF', eg:'EGY', sa:'SAU', ae:'ARE',
+};
+
+// 從 OpenAlex source.societies 推導出版國：
+// societies 是期刊背後的學會／主辦團體，欄位形如
+//   { url: "http://www.cie.org.tw/", organization: "Chinese Institute of Engineers, Taipei, Taiwan, Republic of China" }
+// 這是 country_code 為 null 時唯一可靠的線索（例如掛外國發行商的台灣學會期刊）。
+// organization 文字裡明確寫出國名 → 高可信；只有 ccTLD → 標記需人工確認。
+function societyCountry(societies = []) {
+  for (const soc of [].concat(societies || [])) {
+    const org = (soc?.organization || '').trim();
+    if (org) {
+      const parts = org.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      // 由後往前找國名（國名通常在最後，如 "…, Taipei, Taiwan, Republic of China"）
+      for (const seg of parts.reverse()) {
+        const iso3 = COUNTRY_NAME_TO_ISO3[seg];
+        if (iso3) return { iso3, confident: true };
+      }
+    }
+  }
+  for (const soc of [].concat(societies || [])) {
+    try {
+      const host = new URL(soc?.url).hostname.toLowerCase();
+      const tld  = host.split('.').pop();
+      if (CCTLD_TO_ISO3[tld]) return { iso3: CCTLD_TO_ISO3[tld], confident: false };
+    } catch { /* url 缺漏或格式錯誤，跳過 */ }
+  }
+  return null;
+}
+
 // CrossRef publisher-location 常見國名 / 城市 → ISO 3 碼（全小寫 key）
 const COUNTRY_NAME_TO_ISO3 = {
   'taiwan': 'TWN', 'taiwan, roc': 'TWN', 'republic of china': 'TWN', '台灣': 'TWN', '臺灣': 'TWN',
@@ -2125,7 +2191,7 @@ const CITY_TO_ISO3 = {
   'toronto': 'CAN', 'montreal': 'CAN', 'ottawa': 'CAN', 'melbourne': 'AUS', 'sydney': 'AUS',
 };
 
-function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = null, inDblp = false, orcidDepts = {}, extraAbstract = '', taiwanJournals = {}) {
+function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = null, inDblp = false, orcidDepts = {}, extraAbstract = '', taiwanJournals = {}, oaSource = null) {
   const d = {};
 
   // ── CrossRef 欄位（全部有用的直接保留，不逐一挑選）──────
@@ -2239,34 +2305,51 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
     VA:'VAT',AG:'ATG',GM:'GMB',NE:'NER',SC:'SYC',
   };
   // 判斷順序（全部為確定性來源，查不到就不給值，絕不預設 TWN）：
-  //   ① OpenAlex source.country_code（期刊註冊國）
+  //   ① OpenAlex /sources 的 country_code（期刊 ISSN 登記國，書目學上的出版國，最權威）
   //   ② ISSN 命中 Airiti ACI（TSSCI/THCI）清單 → 確定是台灣期刊
   //   ③ CrossRef publisher-location 的國名／城市
-  //   ④ 出版商名稱對照表（PUBLISHER_COUNTRY，僅限可明確對應者）
-  const _cc2 = (openAlex?.primary_location?.source?.country_code || '').toUpperCase();
+  //   ④ 出版商名稱對照表（PUBLISHER_COUNTRY）→ 這層只是「出版商所在國」，
+  //      與期刊出版國可能不同（例：中國期刊掛 Elsevier 發行），一律標記為需人工確認
+  // 注意：work 內嵌的 primary_location.source 是精簡物件、不含 country_code，
+  //      只能靠 oaSource（另打 /sources 端點取得），不可改回讀 primary_location。
+  const _cc2 = (oaSource?.country_code || '').toUpperCase();
   let _cc3 = _iso2to3[_cc2] || '';
-  let _ccSrc = _cc3 ? 'openalex-source-country' : '';
+  let _ccSrc = _cc3 ? 'openalex-issn-country' : '';
+  let _ccConfident = !!_cc3;
+
+  // ①b OpenAlex country_code 為 null 時，從 societies（期刊背後的學會）推導。
+  //    這是掛外國發行商的台灣學會期刊唯一抓得到的線索（例：中國工程學刊由 T&F 發行）。
+  if (!_cc3) {
+    const soc = societyCountry(oaSource?.societies);
+    if (soc) {
+      _cc3 = soc.iso3;
+      _ccSrc = soc.confident ? 'openalex-society-name' : 'openalex-society-tld';
+      _ccConfident = soc.confident;
+    }
+  }
 
   if (!_cc3) {
     const hit = (work.ISSN || []).some(issn => taiwanJournals[issn.replace(/-/g, '')]);
-    if (hit) { _cc3 = 'TWN'; _ccSrc = 'airiti-aci-issn'; }
+    if (hit) { _cc3 = 'TWN'; _ccSrc = 'taiwan-journal-issn'; _ccConfident = true; }
   }
   if (!_cc3) {
     const loc = (work['publisher-location'] || '').trim();
     if (loc) {
       const tail = loc.split(',').map(s => s.trim()).filter(Boolean).pop() || '';
       const byName = COUNTRY_NAME_TO_ISO3[tail.toLowerCase()] || CITY_TO_ISO3[tail.toLowerCase()] || '';
-      if (byName) { _cc3 = byName; _ccSrc = 'crossref-publisher-location'; }
+      if (byName) { _cc3 = byName; _ccSrc = 'crossref-publisher-location'; _ccConfident = true; }
     }
   }
   if (!_cc3) {
     const byPub = publisherCountry(work.publisher);
-    if (byPub) { _cc3 = byPub; _ccSrc = 'publisher-name'; }
+    // 出版商所在國 ≠ 期刊出版國（例：中國期刊掛 Elsevier 發行），一律要求人工複核
+    if (byPub) { _cc3 = byPub; _ccSrc = 'publisher-name'; _ccConfident = false; }
   }
 
   if (_cc3) {
     d['_journal_country']     = _cc3;
     d['_journal_country_src'] = _ccSrc;
+    if (!_ccConfident) d['_journal_country_confirm'] = true;
   }
 
   // ── 開放取用網址──────────────────────────────────────

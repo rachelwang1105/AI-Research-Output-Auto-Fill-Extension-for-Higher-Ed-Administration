@@ -198,9 +198,16 @@ function fillSecondLayerJournal(data) {
   setText      ('pp',          data.pp);
   setCheckboxes('citelist',    data.citelist);
   setText      ('citetpe_rem', data.citetpe_rem,       true);
-  // 出版國查不到時刻意留空（不預設 TWN），標為橘色虛線提示人工選擇
+  // 出版國查不到時刻意留空（不預設 TWN），標為橘色虛線提示人工選擇；
+  // 若值是從出版商名稱推導而來（_nat_cod_confirm），仍填入但同樣標橘色虛線要求複核
   setRadio     ('nat_tpe',     data.nat_tpe);
   setSelect    ('nat_cod',     data.nat_cod);
+  if (data._nat_cod_confirm) {
+    highlightManual(document.querySelector('select[name="nat_cod"]'));
+    const natRadio = document.querySelector('input[type="radio"][name="nat_tpe"]:checked')
+                  || document.querySelector('input[type="radio"][name="nat_tpe"]');
+    if (natRadio) highlightManual(natRadio.closest('label') || natRadio);
+  }
   setRadio     ('pertpe_cod',  data.pertpe_cod,        true);
   setRadio     ('publ_type',   data.publ_type,         true);
   setText      ('url_addr',    data.url_addr,          true);
@@ -349,7 +356,7 @@ function interceptSubmit() {
     const confirmed = window.confirm(
       '⚠️ 論著助手已自動填入資料。\n\n' +
       '🟡 黃色欄位：AI 已填入，請確認正確性\n' +
-      '🟠 橘色虛線欄位：需人工填寫（卷期頁、資料庫）\n\n' +
+      '🟠 橘色虛線欄位：需人工填寫或複核（卷期頁、資料庫、出版國）\n\n' +
       '確認無誤後按「確定」送出，按「取消」繼續填寫。'
     );
     if (confirmed) {

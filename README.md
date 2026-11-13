@@ -137,6 +137,23 @@ A：本擴充功能已移除所有員編／姓名／ORCID 對照表（個資考�
 
 ---
 
+## data/taiwan_journals.json 的兩種用途
+
+這個檔案以 ISSN（去掉破折號）為 key，**值的意義不同，不可混用**：
+
+| 值 | 筆數 | 用途 |
+|---|---|---|
+| `tssci` / `thci` / `thci_core` | 110 / 80 | 產生 citelist 收錄資料庫代碼（e / n / q），**同時**判定出版國為 TWN。來源：Airiti ACI 清單（2026-07-30） |
+| `tw` | 229 | **只**判定出版國為 TWN，不產生任何 citelist 代碼。來源：OpenAlex `/sources?filter=country_code:tw,type:journal`（2026-11-13） |
+
+新增期刊時請注意：只有確認收錄於 TSSCI／THCI 才填 tier 值，否則一律填 `tw`。
+填錯會讓論著被標上不存在的收錄資料庫。
+
+ACI 的 tier 清單只涵蓋**人文社會類**，工程、醫學、自然科學的台灣期刊不在其中；
+那些期刊的出版國改由 OpenAlex 的 ISSN 登記國與主辦學會所在國判斷。
+
+---
+
 ## 檔案結構
 
 ```
@@ -150,7 +167,7 @@ A：本擴充功能已移除所有員編／姓名／ORCID 對照表（個資考�
 │   ├── pdf.mjs            # PDF.js 主程式
 │   └── pdf.worker.mjs     # PDF.js Worker
 ├── data/
-│   └── taiwan_journals.json   # 台灣期刊資料庫（TSSCI / THCI 等）
+│   └── taiwan_journals.json   # 台灣期刊 ISSN 清單（見下方說明）
 ├── app-config.js          # CONFIG：AI 端點／模型／參數與行為開關
 └── manifest.json          # 擴充功能描述（MV3）
 ```
