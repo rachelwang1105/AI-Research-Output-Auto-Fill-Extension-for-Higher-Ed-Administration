@@ -51,10 +51,19 @@ function setRadio(name, value, optional = false) {
   highlight(el);
 }
 
+// values 為空陣列時會把全部取消勾選（避免重新填入時殘留上一次的勾選）
 function setCheckboxes(name, values) {
-  if (!Array.isArray(values) || values.length === 0) return;
+  if (!Array.isArray(values)) return;
   document.querySelectorAll(`input[type="checkbox"][name="${name}"]`)
     .forEach(el => { el.checked = values.includes(el.value); });
+}
+
+// 收錄資料庫需人工確認時，把所有 citelist 勾選框與備註欄標成橘色虛線
+function markCitelistManual(data) {
+  if (!data._citelist_confirm) return;
+  document.querySelectorAll('input[type="checkbox"][name="citelist"]')
+    .forEach(el => highlightManual(el.closest('label') || el));
+  highlightManual(document.querySelector('[name="citetpe_rem"]'));
 }
 
 function highlight(el) {
@@ -91,6 +100,8 @@ function fillFirstLayer(data) {
   setText  ('publ_dt',      data.publ_dt,        true);
   _fillQuiet = true;  // field_cod change 觸發 ASP.NET postback 造成 ViewData 型別錯誤
   setSelect('field_cod',    data.field_cod);
+  // 論著領域是 AI 判斷，與收錄資料庫一樣標成「需人工確認」
+  if (data._field_confirm) highlightManual(document.querySelector('select[name="field_cod"]'));
   _fillQuiet = false;
   setSelect('publ_tpe',     data.publ_tpe);
   setText  ('publ_txt',     data.publ_txt,       true);
@@ -170,6 +181,8 @@ async function fillAuthors(authors) {
   const fillRow = (i, a) => {
     setText (`authlist[${i}].sta_chi`,    a.sta_chi    || '', true);
     setText (`authlist[${i}].sta_ut_nam`, a.sta_ut_nam || '', true);
+    // 程式去地址時有一段是推測為城市才刪的 → 標成需人工確認
+    if (a._affil_confirm) highlightManual(document.querySelector(`[name="authlist[${i}].sta_ut_nam"]`));
     setRadio(`authlist[${i}].ca_sts`,     a.ca_sts     || '0');
   };
   fillRow(0, authors[0]);
@@ -198,6 +211,7 @@ function fillSecondLayerJournal(data) {
   setText      ('pp',          data.pp);
   setCheckboxes('citelist',    data.citelist);
   setText      ('citetpe_rem', data.citetpe_rem,       true);
+  markCitelistManual(data);
   // 出版國查不到時刻意留空（不預設 TWN），標為橘色虛線提示人工選擇；
   // 若值是從出版商名稱推導而來（_nat_cod_confirm），仍填入但同樣標橘色虛線要求複核
   setRadio     ('nat_tpe',     data.nat_tpe);
@@ -256,6 +270,7 @@ function fillSecondLayerConference(data) {
   setText  ('pp',           data.pp,         true);
   setCheckboxes('citelist', data.citelist);
   setText  ('citetpe_rem',  data.citetpe_rem, true);
+  markCitelistManual(data);
   setText  ('isbn_num',     data.isbn_num,   true);
   setText  ('doi',          data.doi,        true);
 }

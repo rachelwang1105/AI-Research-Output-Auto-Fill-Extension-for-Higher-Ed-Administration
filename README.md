@@ -16,7 +16,7 @@ cd AI-Research-Output-Auto-Fill-Extension-for-Higher-Ed-Administration
 ### 2. 載入後設定 API 金鑰
 
 本專案不在程式碼或設定檔中存放金鑰。載入擴充功能後（見下一步），
-在側欄「著作佇列」分頁的「**AI 設定**」輸入 AI API Key 並按「儲存」即可；
+在側欄任一分頁最下方的「**AI 設定**」輸入 AI API Key 並按「儲存」即可；
 金鑰只存在使用者自己的瀏覽器（`chrome.storage.local`），不會進版控。
 
 AI 端點、模型與參數集中在 `app-config.js` 的 `CONFIG.ai`，要換服務或換模型只改這個檔案。

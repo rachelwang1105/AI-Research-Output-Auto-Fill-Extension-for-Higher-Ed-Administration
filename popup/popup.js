@@ -1497,6 +1497,7 @@ btnConfirm.addEventListener('click', async () => {
   chrome.storage.local.remove('pendingConfirm');
   setStep(2, 'active');
   showLoading('AI 欄位對應中…');
+  const clickT0 = performance.now();   // 耗時統計起點：按下「確認，AI 欄位對應並填入」
 
   chrome.runtime.sendMessage(
     { action: 'processWithAI', formattedText: pendingFormattedText },
@@ -1506,7 +1507,7 @@ btnConfirm.addEventListener('click', async () => {
         setStep(2, 'error');
         return;
       }
-      await dispatchFill(response.data, pendingTabId);
+      await dispatchFill(response.data, pendingTabId, { ...(response.timing || {}), clickT0 });
     }
   );
 });
@@ -1522,7 +1523,7 @@ btnConfirmCancel.addEventListener('click', async () => {
 
 
 // 儲存並廣播填入事件（DOI 模式與純文字模式共用）
-async function dispatchFill(data, tabId) {
+async function dispatchFill(data, tabId, timing = null) {
   setStep(1, 'done');
   setStep(2, 'done');
   setStep(3, 'active');
@@ -1552,7 +1553,10 @@ async function dispatchFill(data, tabId) {
       }
       setStep(3, 'done');
       setStep(4, 'active');
-      showPreview(data);
+      // 耗時統計終點：「AI 解析結果」即將顯示
+      const rec = timing?.clickT0 != null ? buildTimingRecord(data, timing) : null;
+      showPreview(data, rec);
+      if (rec) recordTiming(rec);
       updateQueueButton();
     }
   );
@@ -2259,6 +2263,120 @@ function showConfirm(meta) {
   });
 }
 
+// ── AI 耗時統計 ──────────────────────────────────────────
+// 每次「確認，AI 欄位對應並填入」→「AI 解析結果」顯示，記錄一筆到 chrome.storage.local。
+//   totalSec：側欄端整段（含背景處理、AI 回應、填入表單）
+//   aiSec   ：其中純 AI 回應（background 端 callOpenAI 的時間）
+const TIMING_STORAGE = 'aiTimingLog';
+const TIMING_MAX     = 1000;   // 最多保留筆數，超過丟最舊的
+
+function buildTimingRecord(data, timing) {
+  const totalMs = performance.now() - timing.clickT0;
+  return {
+    ts:       new Date().toISOString(),
+    model:    timing.model || '(unknown)',
+    totalSec: +(totalMs / 1000).toFixed(2),
+    aiSec:    timing.aiMs != null ? +(timing.aiMs / 1000).toFixed(2) : null,
+    publ_tpe: data.publ_tpe || '',
+    doi:      data.doi || '',
+    title:    (data.title1 || '').slice(0, 80),
+  };
+}
+
+function formatTimingRow(r) {
+  return `${r.totalSec.toFixed(1)} 秒` +
+    (r.aiSec != null ? `（AI ${r.aiSec.toFixed(1)} 秒）` : '') + `・${escapeHtml(r.model)}`;
+}
+
+async function getTimingLog() {
+  const log = (await chrome.storage.local.get(TIMING_STORAGE))[TIMING_STORAGE];
+  return Array.isArray(log) ? log : [];
+}
+
+async function recordTiming(rec) {
+  const log = await getTimingLog();
+  log.push(rec);
+  await chrome.storage.local.set({ [TIMING_STORAGE]: log.slice(-TIMING_MAX) });
+  await renderTimingStats();
+}
+
+function _stats(nums) {
+  const a = nums.filter(n => typeof n === 'number').sort((x, y) => x - y);
+  if (!a.length) return null;
+  const mean = a.reduce((s, n) => s + n, 0) / a.length;
+  const mid  = a.length >> 1;
+  const median = a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  return { n: a.length, mean, median, min: a[0], max: a[a.length - 1] };
+}
+
+async function renderTimingStats() {
+  const box = document.getElementById('timingStats');
+  if (!box) return;
+  const log = await getTimingLog();
+  if (!log.length) { box.innerHTML = '尚無紀錄。每次 AI 解析完成會自動記錄一筆。'; return; }
+  const byModel = {};
+  for (const r of log) (byModel[r.model] ||= []).push(r);
+  const f = n => n.toFixed(1);
+  const rows = Object.entries(byModel).map(([model, rs]) => {
+    const t = _stats(rs.map(r => r.totalSec));
+    const a = _stats(rs.map(r => r.aiSec));
+    return `<tr><td>${escapeHtml(model)}</td><td>${t.n}</td>` +
+      `<td>${f(t.mean)}</td><td>${f(t.median)}</td><td>${f(t.min)}–${f(t.max)}</td>` +
+      `<td>${a ? f(a.mean) : '-'}</td></tr>`;
+  }).join('');
+  box.innerHTML =
+    `<table class="timing-table"><thead><tr><th>模型</th><th>次數</th><th>平均</th><th>中位數</th>` +
+    `<th>範圍</th><th>AI 平均</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div style="margin-top:4px;">單位：秒。整段＝按下確認到顯示解析結果；AI＝其中純 AI 回應時間</div>`;
+}
+
+function _csvCell(v) {
+  const s = v == null ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+document.getElementById('btnExportTiming')?.addEventListener('click', async () => {
+  const log = await getTimingLog();
+  if (!log.length) { alert('尚無耗時紀錄'); return; }
+  const cols = ['ts', 'model', 'totalSec', 'aiSec', 'publ_tpe', 'doi', 'title'];
+  const csv  = '﻿' + [cols.join(','), ...log.map(r => cols.map(c => _csvCell(r[c])).join(','))].join('\r\n');
+  const url  = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a    = Object.assign(document.createElement('a'), {
+    href: url, download: `ai-timing-${new Date().toISOString().slice(0, 10)}.csv`,
+  });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+document.getElementById('btnClearTiming')?.addEventListener('click', async () => {
+  if (!confirm('確定清除所有 AI 耗時紀錄？建議先匯出 CSV。')) return;
+  await chrome.storage.local.remove(TIMING_STORAGE);
+  await renderTimingStats();
+});
+
+renderTimingStats();
+
+// 收錄資料庫顯示：只列程式確定查到的；其餘提示人工勾選
+const _CITELIST_NAMES = {
+  a: 'AHCI', b: 'SSCI', c: 'SCIE', d: 'EI', e: 'TSSCI', f: 'MLA', g: 'CSA', h: 'LLBA',
+  i: 'ACM', j: 'DBLP', k: 'IEEE', l: 'CITESEER', m: 'SCI', n: 'THCI', p: 'CSSCI',
+  q: 'THCI Core', r: 'Scopus', x: '其他',
+};
+function formatCitelist(data) {
+  if (!Array.isArray(data.citelist)) return '';
+  const names = data.citelist.map(c => _CITELIST_NAMES[c] || c).join('、');
+  if (!data._citelist_confirm) return names;
+  return (names ? names + '；' : '') + '⚠ SCI／SCIE／SSCI／AHCI／Scopus／EI 請人工勾選';
+}
+
+// 論著領域顯示：AI 判斷，一律提示人工確認；附 OpenAlex 學科供參考
+function formatField(data) {
+  if (!data.field_cod) return '';
+  const name = data._field_name ? ` ${escapeHtml(data._field_name)}` : '';
+  const ref  = data._field_ref ? `（OpenAlex：${escapeHtml(data._field_ref)}）` : '';
+  return `${escapeHtml(data.field_cod)}${name}・⚠ AI 判斷，請確認${ref}`;
+}
+
 // 出版國顯示：標示來源可信度，讓使用者知道哪些需要複核
 function formatNatCod(data) {
   if (data.publ_tpe !== '03') return '';
@@ -2275,7 +2393,7 @@ function formatNatCod(data) {
   return `${data.nat_cod}（${tpe}）${note ? '・' + note : ''}`;
 }
 
-function showPreview(data) {
+function showPreview(data, timingRec = null) {
   hide(sectionLoading);
   hide(sectionError);
   show(sectionPreview);
@@ -2285,12 +2403,15 @@ function showPreview(data) {
     { key: '日期',   val: data.publ_dt,                             cls: 'code' },
     { key: '類別',   val: formatPubl(data.publ_tpe),                cls: 'code' },
     { key: '語言',   val: formatLang(data.lang_cod),                cls: 'code' },
+    { key: '領域',   val: formatField(data),                        cls: data._field_confirm ? 'warn' : 'code' },
     { key: '期刊',   val: data.jnl_nam,                             cls: '' },
     { key: '卷期頁', val: formatVol(data),                          cls: '' },
     { key: '出版國', val: formatNatCod(data),                       cls: data._nat_cod_confirm ? 'warn' : 'code' },
+    { key: '收錄',   val: formatCitelist(data),                     cls: data._citelist_confirm ? 'warn' : 'code' },
     { key: 'DOI',    val: data.doi,                                 cls: 'code' },
     { key: '升等',   val: data.promote === '0' ? '非升等論著' : '⚠ 請確認',
                      cls: data.promote === '0' ? '' : 'warn' },
+    { key: '耗時',   val: timingRec ? formatTimingRow(timingRec) : '', cls: 'code' },
   ];
 
   previewBox.innerHTML = rows

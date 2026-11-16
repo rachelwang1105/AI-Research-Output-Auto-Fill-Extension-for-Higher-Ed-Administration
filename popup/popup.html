@@ -488,6 +488,9 @@
     }
     .preview-val.code { font-family: "Courier New", monospace; color: var(--gold); }
     .preview-val.warn { color: var(--amber); }
+    .timing-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    .timing-table th, .timing-table td { padding: 2px 4px; border-bottom: 1px solid var(--border, #ddd); text-align: right; white-space: nowrap; }
+    .timing-table th:first-child, .timing-table td:first-child { text-align: left; }
 
     /* ── Error ───────────────────────────────────────────────── */
     .error-box {
@@ -705,18 +708,6 @@
     <!-- 著作佇列 tab -->
     <div id="modeQueueContainer" class="hidden">
 
-      <!-- AI 設定 -->
-      <div class="orcid-block" style="margin-bottom:8px;">
-        <div class="section-label">AI 設定</div>
-        <div class="key-row">
-          <input type="password" id="apiKeyInput" placeholder="AI API Key"
-            style="font-family:'Courier New',monospace;" autocomplete="off" />
-          <button class="btn-sm" id="btnSaveKey">儲存</button>
-        </div>
-        <div id="apiKeyStatus" class="status-hint">尚未設定</div>
-        <div class="input-hint">金鑰只存在你自己的瀏覽器（chrome.storage.local），不會上傳也不進版控</div>
-      </div>
-
       <!-- 身分設定（ORCID 追蹤 + AH 學者頁）-->
       <div class="orcid-block">
         <div class="section-label">我的身分設定</div>
@@ -781,6 +772,25 @@
     </div>
 
     <button class="btn-primary" id="btnProcess">加入佇列</button>
+
+    <!-- AI 設定（三個分頁共用，固定在分頁內容最下方）-->
+    <div class="orcid-block" id="aiSettingsBlock" style="margin-top:12px; margin-bottom:0;">
+      <div class="section-label">AI 設定</div>
+      <div class="key-row">
+        <input type="password" id="apiKeyInput" placeholder="AI API Key"
+          style="font-family:'Courier New',monospace;" autocomplete="off" />
+        <button class="btn-sm" id="btnSaveKey">儲存</button>
+      </div>
+      <div id="apiKeyStatus" class="status-hint">尚未設定</div>
+      <div class="input-hint">金鑰只存在你自己的瀏覽器（chrome.storage.local），不會上傳也不進版控</div>
+
+      <div class="section-label" style="margin-top:10px;">AI 耗時統計</div>
+      <div id="timingStats" class="input-hint"></div>
+      <div class="key-row" style="margin-top:6px;">
+        <button class="btn-sm" id="btnExportTiming" style="flex:1;">匯出 CSV</button>
+        <button class="btn-sm" id="btnClearTiming" style="flex:1;">清除紀錄</button>
+      </div>
+    </div>
   </div>
 
   <!-- 論文確認區 -->
