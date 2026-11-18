@@ -7,7 +7,7 @@ export const CONFIG = {
   ai: {
     // OpenAI 相容的 chat completions 端點
     endpoint: 'https://www.myai168.com/tw/api/openai/v1/chat/completions',
-    model: 'gpt-5.6-sol',
+    model: 'gpt-5.4-mini',
     // 以下參數為 null 時不會送出（部分模型不接受 temperature 等參數）
     maxCompletionTokens: 4000,
     temperature: null,

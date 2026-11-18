@@ -58,12 +58,26 @@ function setCheckboxes(name, values) {
     .forEach(el => { el.checked = values.includes(el.value); });
 }
 
-// 收錄資料庫需人工確認時，把所有 citelist 勾選框與備註欄標成橘色虛線
+// 收錄資料庫需人工確認時：勾選框標成橘色虛線，並在勾選框旁顯示提示框
+// （與開放取用全文的提示框同一種樣式；提示不寫進「其他」備註欄，避免被送進系統）
 function markCitelistManual(data) {
   if (!data._citelist_confirm) return;
-  document.querySelectorAll('input[type="checkbox"][name="citelist"]')
-    .forEach(el => highlightManual(el.closest('label') || el));
-  highlightManual(document.querySelector('[name="citetpe_rem"]'));
+  const boxes = [...document.querySelectorAll('input[type="checkbox"][name="citelist"]')];
+  boxes.forEach(el => highlightManual(el.closest('label') || el));
+  if (data._citelist_hint && boxes.length) showCitelistBanner(data._citelist_hint, boxes[boxes.length - 1]);
+}
+
+function showCitelistBanner(text, lastBox) {
+  document.getElementById('nccu-citelist-banner')?.remove();
+  const anchor = lastBox.closest('td, tr, div') || lastBox;
+  const banner = document.createElement('div');
+  banner.id = 'nccu-citelist-banner';
+  banner.style.cssText = [
+    'background:#fff8dc', 'border:2px solid #f0a500', 'border-radius:6px',
+    'padding:8px 12px', 'margin:8px 0', 'font-size:13px', 'color:#5a3e00',
+  ].join(';');
+  banner.textContent = '⚠ ' + text;
+  anchor.insertAdjacentElement('beforeend', banner);
 }
 
 function highlight(el) {
@@ -393,6 +407,7 @@ function clearHighlight() {
     el.style.outline = '';
     el.dataset.aiHighlighted = '';
   });
+  document.getElementById('nccu-citelist-banner')?.remove();
   const submitBtn = document.querySelector('input[type="submit"], button[type="submit"]');
   if (submitBtn) submitBtn.dataset.intercepted = '';
 }
@@ -428,6 +443,7 @@ window.addEventListener('nccu_clearFill', () => {
     el.style.outline = '';
     el.dataset.aiHighlighted = '';
   });
+  document.getElementById('nccu-citelist-banner')?.remove();
   chrome.storage.local.remove(['pendingFillData', 'filledPhase']);
 });
 

@@ -1497,7 +1497,7 @@ btnConfirm.addEventListener('click', async () => {
   chrome.storage.local.remove('pendingConfirm');
   setStep(2, 'active');
   showLoading('AI 欄位對應中…');
-  const clickT0 = performance.now();   // 耗時統計起點：按下「確認，AI 欄位對應並填入」
+  // [耗時統計：暫時停用] const clickT0 = performance.now();   // 起點：按下「確認，AI 欄位對應並填入」
 
   chrome.runtime.sendMessage(
     { action: 'processWithAI', formattedText: pendingFormattedText },
@@ -1507,7 +1507,8 @@ btnConfirm.addEventListener('click', async () => {
         setStep(2, 'error');
         return;
       }
-      await dispatchFill(response.data, pendingTabId, { ...(response.timing || {}), clickT0 });
+      await dispatchFill(response.data, pendingTabId);
+      // [耗時統計：暫時停用] await dispatchFill(response.data, pendingTabId, { ...(response.timing || {}), clickT0 });
     }
   );
 });
@@ -1553,10 +1554,11 @@ async function dispatchFill(data, tabId, timing = null) {
       }
       setStep(3, 'done');
       setStep(4, 'active');
-      // 耗時統計終點：「AI 解析結果」即將顯示
-      const rec = timing?.clickT0 != null ? buildTimingRecord(data, timing) : null;
-      showPreview(data, rec);
-      if (rec) recordTiming(rec);
+      showPreview(data);
+      // [耗時統計：暫時停用] 終點：「AI 解析結果」即將顯示
+      // const rec = timing?.clickT0 != null ? buildTimingRecord(data, timing) : null;
+      // showPreview(data, rec);
+      // if (rec) recordTiming(rec);
       updateQueueButton();
     }
   );
@@ -2263,6 +2265,8 @@ function showConfirm(meta) {
   });
 }
 
+/* [耗時統計：暫時停用] 測試模型速度用，需要時把這個區塊、popup.html 的「AI 耗時統計」區塊
+   與其他標有 [耗時統計：暫時停用] 的幾行一起解除註解。
 // ── AI 耗時統計 ──────────────────────────────────────────
 // 每次「確認，AI 欄位對應並填入」→「AI 解析結果」顯示，記錄一筆到 chrome.storage.local。
 //   totalSec：側欄端整段（含背景處理、AI 回應、填入表單）
@@ -2355,6 +2359,7 @@ document.getElementById('btnClearTiming')?.addEventListener('click', async () =>
 });
 
 renderTimingStats();
+*/
 
 // 收錄資料庫顯示：只列程式確定查到的；其餘提示人工勾選
 const _CITELIST_NAMES = {
@@ -2411,7 +2416,7 @@ function showPreview(data, timingRec = null) {
     { key: 'DOI',    val: data.doi,                                 cls: 'code' },
     { key: '升等',   val: data.promote === '0' ? '非升等論著' : '⚠ 請確認',
                      cls: data.promote === '0' ? '' : 'warn' },
-    { key: '耗時',   val: timingRec ? formatTimingRow(timingRec) : '', cls: 'code' },
+    // [耗時統計：暫時停用] { key: '耗時',   val: timingRec ? formatTimingRow(timingRec) : '', cls: 'code' },
   ];
 
   previewBox.innerHTML = rows

@@ -903,16 +903,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const cleanRaw  = raw.replace(/^_pre_(?:authors_json|dept): .+$/gm, '').trim();
         // 純文字（非 JSON）來自文字模式貼上 → 先補查 TSSCI/THCI/Scopus 再送 AI
         const text = cleanRaw.trimStart()[0] !== '{' ? await enrichPublicationText(cleanRaw) : cleanRaw;
-        // 計時：只量 callOpenAI（送出請求到解析完回應），供側欄耗時統計使用
-        const _aiT0  = performance.now();
+        // [耗時統計：暫時停用] 只量 callOpenAI（送出請求到解析完回應），供側欄耗時統計使用
+        // const _aiT0  = performance.now();
         const result = await callOpenAI(text);
-        const aiMs   = Math.round(performance.now() - _aiT0);
+        // const aiMs   = Math.round(performance.now() - _aiT0);
         // 有 DOM 作者清單時直接覆蓋 AI 判斷
         if (_preAuthors?.length > 0) {
           result.authors  = _preAuthors.map(a => ({ sta_chi: a.sta_chi, sta_ut_nam: _preDept, ca_sts: '0' }));
           result.auth_cnt = _preAuthors.length;
         }
-        sendResponse({ success: true, data: result, timing: { model: CONFIG.ai.model, aiMs } });
+        sendResponse({ success: true, data: result });
+        // [耗時統計：暫時停用] sendResponse({ success: true, data: result, timing: { model: CONFIG.ai.model, aiMs } });
       } catch (err) {
         sendResponse({ success: false, error: err.message });
       }
@@ -1061,8 +1062,9 @@ async function fetchMetadataOnly(doi) {
         const year        = dcAttr.publicationYear ? String(dcAttr.publicationYear) : '';
         const authorCount = dcAttr.creators?.length   || 0;
         const hasAbstract = !!(dcAttr.descriptions?.some(d => d.descriptionType === 'Abstract') || s2Data?.abstract);
+        const meeting     = await fetchZenodoMeeting(cleanDoi);   // Zenodo 的會議資訊（DataCite 沒有轉錄）
         return { title, journal, year, authorCount, hasAbstract,
-          formattedText: formatDataCiteData(dcAttr, cleanDoi, openAlexData, s2Data) };
+          formattedText: formatDataCiteData(dcAttr, cleanDoi, openAlexData, s2Data, meeting) };
       }
          // 第三備援：doi.org 內容協商（Airiti/台灣期刊等）
       const cslData = await fetchDoiCsl(cleanDoi);
@@ -1348,12 +1350,22 @@ function cleanAffiliationUnit(unit) {
 }
 
 // 作者的 sta_ut_nam：多個單位以「; 」分隔，逐一清理；只有大學名稱的單位捨棄
+// 看起來像參考文獻而不是單位：有年份，且有卷／期／頁等書目記號或書名號。
+// 實例：月旦某篇的 CrossRef affiliation 放的是「論法制上權利主體之建構基礎與變化…，法令月刊，2016年3月，67卷3期」
+function looksLikeCitation(s) {
+  const hasYear = /(?:^|[^\d])(?:19|20)\d{2}(?:\s*年|[^\d]|$)/.test(s);
+  const hasBib  = /\d+\s*卷|\d+\s*期|第\s*\d+\s*[卷期頁]|\d+\s*頁|\bvol\.?\s*\d|\bno\.?\s*\d|\bpp?\.\s*\d|\b\d+\s*\(\d+\)\s*[:：,，]\s*\d|[〈《「『][^〉》」』]{4,}[〉》」』]|──|——/i.test(s);
+  return hasYear && hasBib;
+}
+
 function buildAuthorAffiliation(a) {
   const raw = (a.affiliation || '').trim();
   if (!raw) return { text: (a['orcid-dept'] || '').trim(), unsure: false };
   let unsure = false;
   const units = [];
   for (const u of raw.split(/\s*[;；]\s*/).filter(Boolean)) {
+    // 來源資料把參考文獻誤放在單位欄 → 這段不填，標記需人工確認
+    if (looksLikeCitation(u)) { unsure = true; continue; }
     const r = cleanAffiliationUnit(u);
     if (r.unsure) unsure = true;
     if (!r.text) continue;
@@ -1373,13 +1385,59 @@ function buildAuthorName(a) {
 }
 
 // 從送給 AI 的輸入文字取出作者陣列；不是 JSON 或沒有作者時回傳 null（交給 AI）
-function sourceAuthors(text) {
+// 送給 AI 的輸入若是 JSON（前面可能有 _journal_url: 之類的前置行），解析出物件；否則 null
+function parseSourceJson(text) {
   const brace = text.indexOf('{');
   if (brace === -1) return null;
-  try {
-    const list = JSON.parse(text.slice(brace)).author;
-    return Array.isArray(list) && list.length ? list : null;
-  } catch { return null; }
+  try { return JSON.parse(text.slice(brace)); } catch { return null; }
+}
+
+function sourceAuthors(text) {
+  const list = parseSourceJson(text)?.author;
+  return Array.isArray(list) && list.length ? list : null;
+}
+
+// ── 會議欄位由程式填 ─────────────────────────────────────────
+// 會議名稱、日期、地點、主辦單位、論文集名稱、ISBN 在第一階段已查到，直接寫入，不靠 AI 照抄。
+// 實測 gpt-5.4-mini 對同一篇 ACM 論文跑 3 次，有 2 次整組會議欄位漏掉。
+// 只在來源有值時覆蓋；來源沒有的欄位保留 AI 的結果。
+const _PROCEEDINGS_RE = /proceedings|conference|symposium|workshop|congress|colloquium|研討會|年會|\([A-Z][A-Za-z&-]{1,15}\s*['’]?\d{2,4}\)/i;
+
+function pickProceedingsTitle(containerTitles) {
+  const list = [].concat(containerTitles || []).filter(Boolean);
+  if (!list.length) return '';
+  // 有叢書名＋書名時（如 Springer：["STEAM-H …", "… (ICAAHI 2025)"]），取像論文集的那一個，否則取最後一個
+  return list.find(t => _PROCEEDINGS_RE.test(t)) || list[list.length - 1];
+}
+
+function confCountryIso3(name) {
+  const key = (name || '').trim().toLowerCase().replace(/\.$/, '');
+  return COUNTRY_NAME_TO_ISO3[key] || '';
+}
+
+// 從送給 AI 的輸入取出會議相關欄位：JSON（CrossRef／CSL）直接取物件；
+// 文字（DataCite）則讀 "_conf_xxx: 值"、"_is_conference: 值" 這類行。沒有任何會議資訊回傳 null
+function sourceConferenceInfo(text) {
+  const j = parseSourceJson(text);
+  if (j) return j;
+  const o = {};
+  for (const m of text.matchAll(/^(_conf_(?:nam|dt|city|country|host)|_is_conference):\s*(.+)$/gm)) o[m[1]] = m[2].trim();
+  return Object.keys(o).length ? o : null;
+}
+
+function applySourceConferenceFields(parsed, src) {
+  const set = (k, v) => { if (v != null && String(v).trim() !== '') parsed[k] = String(v).trim(); };
+  const proc = pickProceedingsTitle(src['container-title']);
+  set('conf_nam',   src._conf_nam || proc);
+  set('thesis_chi', proc);
+  set('conf_dt',    src._conf_dt);
+  set('conf_pls',   src._conf_city);
+  set('cty_nam',    src._conf_city);
+  set('conf_host',  src._conf_host);
+  set('isbn_num',   src.ISBN);
+  set('nat_cod',    confCountryIso3(src._conf_country));
+  if (proc || src.ISBN) parsed.proceeding = 'y';
+  parsed._conf_from_source = true;
 }
 
 function buildAuthorsFromSource(list) {
@@ -1465,6 +1523,19 @@ async function callOpenAI(text) {
       parsed.auth_cnt = parsed.authors.length;
       parsed._authors_from_source = true;
     }
+    // 會議論文：來源已確認是會議時，類別一律為 04；會議欄位由程式依來源資料填入
+    const _confSrc = sourceConferenceInfo(text);
+    if (_confSrc?._is_conference && parsed.publ_tpe !== '04') {
+      parsed._publ_tpe_ai = parsed.publ_tpe;          // 保留 AI 原判斷，供除錯
+      parsed.publ_tpe = '04';
+      if (!parsed.pp && parsed.page_num) parsed.pp = parsed.page_num;
+      // 專書篇章／期刊論文專用欄位不適用會議論文；nat_cod 在期刊是出版國、在會議是舉辦國，需清掉重填
+      for (const k of ['page_num', 'set_title', 'publ_nam', 'publ_pls', 'bktpe_cod', 'bkcat_tpe', 'bkcat_rem',
+                       'jnl_nam', 'vol', 'no', 'acc_flg', 'nat_tpe', 'nat_cod', 'pertpe_cod', 'publ_type'])
+        delete parsed[k];
+    }
+    if (_confSrc?._is_conference) parsed._publ_tpe_src = _confSrc._is_conference;
+    if (parsed.publ_tpe === '04' && _confSrc) applySourceConferenceFields(parsed, _confSrc);
     // field_cod 沒有唯一正解（AI 判斷），一律標記需人工確認，並附上 OpenAlex 學科供秘書參考
     if (parsed.field_cod) {
       parsed._field_confirm = true;
@@ -1596,7 +1667,9 @@ async function callOpenAI(text) {
         missing.push(wos ? 'WoS 子資料庫（期刊收錄於 WoS，請擇 SCIE／SSCI／AHCI）' : 'SCI／SCIE／SSCI／AHCI');
       if (!known.includes('r')) missing.push('Scopus');
       if (!known.includes('d')) missing.push('EI');
-      parsed.citetpe_rem = `【程式未自動判斷：${missing.join('、')}，請人工確認後勾選】`;
+      // 提示不寫進「其他」備註欄（citetpe_rem 會被送進系統），改由表單上勾選框旁的提示框顯示
+      parsed.citetpe_rem = '';
+      parsed._citelist_hint = `程式未自動判斷：${missing.join('、')}，請人工確認後勾選`;
       parsed._citelist_confirm = true;
     }
     // _journal_url 強制覆蓋：OpenAlex 查到的期刊 URL 優先序最高，AI 若沒用就補回來
@@ -1618,7 +1691,7 @@ async function callOpenAI(text) {
 async function fetchOpenAlexData(doi) {
   try {
     const url = `https://api.openalex.org/works/https://doi.org/${doiEncode(doi)}` +
-      `?select=abstract_inverted_index,keywords,authorships,open_access,primary_topic,cited_by_count,primary_location,biblio&mailto=nccu-plugin`;
+      `?select=type,abstract_inverted_index,keywords,authorships,open_access,primary_topic,cited_by_count,primary_location,biblio&mailto=nccu-plugin`;
     const res = await fetch(url);
     if (!res.ok) return null;
     return await res.json();
@@ -1675,6 +1748,75 @@ async function fetchSemanticScholar(identifier) {
 
 
 // ── DataCite（CrossRef 404 時的備援；覆蓋資料集/報告/機構庫 DOI）──
+// ── 會議資訊（類別判斷用）──────────────────────────────────
+// 實測：CrossRef 把 Springer 論文集的論文標成 book-chapter、DataCite 把 Zenodo 會議簡報標成 Text，
+// 但 OpenAlex 的作品 type、CrossRef 的 assertion（ConferenceInfo）、Zenodo 的 meeting 都記錄了會議。
+// 30 篇測試中，OpenAlex 有收錄的 25 篇，其 type 與學校登錄類別全部一致。
+
+const _MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const _ymd = (y, m, d) => `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`;
+
+// 單一日期："2025-11-20"、"20 November 2025"、"November 20, 2025" → "2025/11/20"；無法解析回傳 ''
+function parseConfDate(s) {
+  s = (s || '').trim();
+  let m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return _ymd(m[1], m[2], m[3]);
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\.?\s+(\d{4})$/);
+  if (m && _MONTHS[m[2].slice(0, 3).toLowerCase()]) return _ymd(m[3], _MONTHS[m[2].slice(0, 3).toLowerCase()], m[1]);
+  m = s.match(/^([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (m && _MONTHS[m[1].slice(0, 3).toLowerCase()]) return _ymd(m[3], _MONTHS[m[1].slice(0, 3).toLowerCase()], m[2]);
+  return '';
+}
+
+// 日期區間："8-12 April 2026"、"April 8-12, 2026"，或單一日期 → "2026/04/08-2026/04/12"
+function parseConfDateRange(s) {
+  s = (s || '').trim().replace(/[–—]/g, '-');
+  let m = s.match(/^(\d{1,2})\s*-\s*(\d{1,2})\s+([A-Za-z]{3,})\.?\s+(\d{4})$/);
+  if (m && _MONTHS[m[3].slice(0, 3).toLowerCase()]) {
+    const mo = _MONTHS[m[3].slice(0, 3).toLowerCase()];
+    return `${_ymd(m[4], mo, m[1])}-${_ymd(m[4], mo, m[2])}`;
+  }
+  m = s.match(/^([A-Za-z]{3,})\.?\s+(\d{1,2})\s*-\s*(\d{1,2}),?\s+(\d{4})$/);
+  if (m && _MONTHS[m[1].slice(0, 3).toLowerCase()]) {
+    const mo = _MONTHS[m[1].slice(0, 3).toLowerCase()];
+    return `${_ymd(m[4], mo, m[2])}-${_ymd(m[4], mo, m[3])}`;
+  }
+  return parseConfDate(s);
+}
+
+// 地點 "Los Angeles, CA, United States." → { city, country }
+function splitConfPlace(place) {
+  const parts = (place || '').split(',').map(s => s.trim().replace(/\.$/, '')).filter(Boolean);
+  return { city: parts[0] || '', country: parts.length > 1 ? parts[parts.length - 1] : '' };
+}
+
+// CrossRef assertion 的 ConferenceInfo 群組（Springer 論文集常見）
+function crossrefConferenceInfo(work) {
+  const items = (work.assertion || []).filter(a => a.group?.name === 'ConferenceInfo');
+  if (!items.length) return null;
+  const v = n => items.find(a => a.name === n)?.value || '';
+  const start = parseConfDate(v('conference_start_date')), end = parseConfDate(v('conference_end_date'));
+  return {
+    name: v('conference_name'), acronym: v('conference_acronym'),
+    city: v('conference_city'), country: v('conference_country'),
+    dt: start ? (end && end !== start ? `${start}-${end}` : start) : '',
+  };
+}
+
+// Zenodo 紀錄的 meeting 欄位（DataCite 不會轉錄這個欄位）
+async function fetchZenodoMeeting(doi) {
+  const id = doi.match(/^10\.5281\/zenodo\.(\d+)$/i)?.[1];
+  if (!id) return null;
+  try {
+    const res = await fetch(`https://zenodo.org/api/records/${id}`);
+    if (!res.ok) return null;
+    const mt = (await res.json()).metadata?.meeting;
+    if (!mt?.title) return null;
+    const { city, country } = splitConfPlace(mt.place);
+    return { name: mt.title, acronym: mt.acronym || '', city, country, dt: parseConfDateRange(mt.dates) };
+  } catch { return null; }
+}
+
 async function fetchDataCite(doi) {
   try {
     const res = await fetch(`https://api.datacite.org/dois/${doiEncode(doi)}`);
@@ -1683,7 +1825,7 @@ async function fetchDataCite(doi) {
   } catch { return null; }
 }
 
-function formatDataCiteData(attr, doi, openAlex = null, s2 = null) {
+function formatDataCiteData(attr, doi, openAlex = null, s2 = null, meeting = null) {
   const lines = [];
   const title = attr.titles?.[0]?.title || '';
   if (title) lines.push(`標題：${title}`);
@@ -1725,7 +1867,22 @@ function formatDataCiteData(attr, doi, openAlex = null, s2 = null) {
   if (openAlexResearchField(openAlex)) lines.push(`research-field: ${openAlexResearchField(openAlex)}`);
 
   const type = attr.types?.resourceTypeGeneral || attr.types?.resourceType || '';
-  if (type) lines.push(`類型：${type}`);
+  // 會議論文判斷：DataCite 類型、Zenodo meeting、OpenAlex type 任一指出是會議 → 類型改寫為 conference-paper
+  const confBy = /^conference(paper|proceeding)$/i.test(attr.types?.resourceTypeGeneral || '') ? 'datacite-type'
+               : meeting ? 'zenodo-meeting'
+               : openAlex?.type === 'conference-paper' ? 'openalex-type' : '';
+  if (confBy) {
+    lines.push(`類型：conference-paper（DataCite 原類型：${type || '未提供'}）`);
+    lines.push(`_is_conference: ${confBy}`);
+  } else if (type) {
+    lines.push(`類型：${type}`);
+  }
+  if (meeting) {
+    if (meeting.name)    lines.push(`_conf_nam: ${meeting.name}`);
+    if (meeting.dt)      lines.push(`_conf_dt: ${meeting.dt}`);
+    if (meeting.city)    lines.push(`_conf_city: ${meeting.city}`);
+    if (meeting.country) lines.push(`_conf_country: ${meeting.country}`);
+  }
   lines.push(`DOI：${doi}`);
   return lines.join('\n');
 }
@@ -2586,11 +2743,37 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
       d['_conf_dt'] = endP ? `${fmtDate(startP)}-${fmtDate(endP)}` : fmtDate(startP);
     }
     if (ev.location) {
-      const parts = ev.location.split(',').map(s => s.trim());
-      d['_conf_city']    = parts[0] || '';
-      d['_conf_country'] = parts[parts.length - 1] || '';
+      const parts = ev.location.split(',').map(s => s.trim()).filter(Boolean);
+      let city = parts[0] || '', country = parts.length > 1 ? parts[parts.length - 1] : '';
+      // 沒有逗號時（如 ACM 的 "Barcelona Spain"），從尾端比對國名清單拆出國家
+      if (parts.length === 1) {
+        const words = city.split(/\s+/);
+        for (let k = Math.min(3, words.length - 1); k >= 1; k--) {
+          const tail = words.slice(-k).join(' ');
+          if (COUNTRY_NAME_TO_ISO3[tail.toLowerCase()]) { country = tail; city = words.slice(0, -k).join(' '); break; }
+        }
+      }
+      d['_conf_city']    = city;
+      if (country) d['_conf_country'] = country;
     }
     if (work.publisher) d['_conf_host'] = work.publisher;
+  }
+  // CrossRef 沒有 event、但 assertion 有 ConferenceInfo（Springer 論文集）→ 用它補會議欄位
+  const _ci = crossrefConferenceInfo(work);
+  if (_ci) {
+    if (!d['_conf_nam']     && _ci.name)    d['_conf_nam']     = _ci.name;
+    if (!d['_conf_dt']      && _ci.dt)      d['_conf_dt']      = _ci.dt;
+    if (!d['_conf_city']    && _ci.city)    d['_conf_city']    = _ci.city;
+    if (!d['_conf_country'] && _ci.country) d['_conf_country'] = _ci.country;
+  }
+  // 會議論文判斷：CrossRef event、ConferenceInfo、OpenAlex type 任一指出是會議論文 →
+  // 把 type 改成 conference-paper 讓 AI 依規則①判為 04，並由程式在 AI 回傳後確保類別為 04
+  const _confBy = work.event ? 'crossref-event' : _ci ? 'crossref-conference-info'
+                : openAlex?.type === 'conference-paper' ? 'openalex-type' : '';
+  if (_confBy) {
+    if (d.type && d.type !== 'proceedings-article' && d.type !== 'conference-paper') d['crossref-type'] = d.type;
+    d.type = 'conference-paper';
+    d['_is_conference'] = _confBy;
   }
 
   // DOI 路徑永遠補 URL（供 url_addr 使用）
