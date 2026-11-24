@@ -55,7 +55,6 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
 - publ_txt: 論著摘要，若無則留空字串
 - promote: 升等論著。**永遠填 "0"**（非升等論著）——此欄無法從論著資料判斷，由秘書手動調整
 - chk_odr: 本人是否為通訊作者，若來源未說明預設 "N"
-- **【作者由程式產生】若輸入是 JSON 且含非空的 "author" 陣列：auth_cnt 填 0、authors 填空陣列 []，程式會依輸入自動產生作者名單；下方 auth_cnt／authors 規則只適用於沒有 "author" 陣列的輸入（純文字等）。**
 - auth_cnt: 總作者人數（數字）
 - authors: 填**所有**作者（陣列），每位作者一個物件，格式：{"sta_chi":"姓名","sta_ut_nam":"所屬系所","ca_sts":"0"}
   - sta_chi: **只能填資料來源中已明確出現的中文姓名**。若輸入只有英文/拼音姓名（如 "Wen-Hung Liao"），直接填英文姓名（格式：Given Family，如 "Wen-Hung Liao"）。**嚴格禁止從拼音、羅馬字或英文名推測、翻譯或生成中文字**
@@ -65,7 +64,7 @@ const SYSTEM_PROMPT = `你是一個學術論著資料清洗助手，專門處理
     ①使用該作者自己的 affiliation 欄位文字（這就是文稿 affiliation 區塊的原文）。**若文稿上該作者標了多個單位，affiliation 會以「; 」（分號＋空白）串接，代表多個單位：必須全部保留、維持原順序、仍以「; 」串接輸出，不可只挑一個、不可重新排序、不可合併或刪減。**下方 ②～④ 對每個單位分別套用。
     ②把 ① 的文字去掉郵遞區號、城市、國家後，**原文照抄**其餘完整單位文字。例如 "Research Center for Information Technology Innovation, Academia Sinica, Taipei 11529, Taiwan; Department of Computer Science, National Chengchi University, Taipei 11605, Taiwan" → "Research Center for Information Technology Innovation, Academia Sinica; Department of Computer Science, National Chengchi University"。例如 "Department of Computer Science, National Chengchi University, Taipei 11605, Taiwan" → "Department of Computer Science, National Chengchi University"；"資訊科學系, 國立政治大學, 台北" → "資訊科學系, 國立政治大學"。**不可翻成中文、不可縮寫成「資科系」之類的簡稱。**
     ③非學術機構（政府、軍方、企業、研究院）同樣去掉城市、國家後保留單位全名，如 "Material Production Center Armaments Bureau, MND, The 401st Factory, Taichung, Taiwan" → "Material Production Center Armaments Bureau, MND, The 401st Factory"。
-    ④**若某個單位只有大學／學院／學校名稱（不含系、所、院、中心、研究室等次級單位），該單位捨棄；若全部單位都被捨棄，填空字串 ""**——例如 "National Chengchi University" → ""、"Stanford University" → ""、"政治大學" → ""。
+    ④**只有大學／學院／學校名稱的單位（不含系所）也照文稿保留，不可捨棄、不可留空**——例如 "National Chengchi University, Taipei, Taiwan" → "National Chengchi University"、"Department of Economics, University A; University B" → "Department of Economics, University A; University B"、"政治大學" → "政治大學"。
     ⑤若該作者沒有 affiliation（欄位不存在或為空），才看該作者自己的 orcid-dept：有則填 orcid-dept 原值（**不要**拼上 orcid-org、不要翻譯）。orcid-dept 來自 ORCID 的「目前任職單位」，可能與發表當時文稿上的單位不同，因此優先序最低。
     ⑥以上皆無者，一律填空字串 ""。**寧可留空，也不要填推測值。**
   - ca_sts: 該作者是否為通訊作者："1"=是, "0"=否。**若輸入的 author[i].corresponding 為 true，填 "1"**；否則填 "0"
@@ -1316,7 +1315,6 @@ function affilPlaces() {
   return _affilPlaces;
 }
 const _INSTITUTION_RE = /department|dept\b|school|college|institute|universit|center|centre|laborator|\blab\b|program|faculty|graduate|division|hospital|academia|research|\bco\.|ltd|inc\b|corp|bureau|ministry|office|library|foundation|association|society|council|agency|系|所|院|中心|醫院|研究|室|處|館|大學|學會|協會|公司/i;
-const _UNIV_ONLY_RE  = /universit|college|大學|學院/i;
 
 // 單一單位：去掉郵政信箱、郵遞區號、城市、國家。回傳 { text, unsure }
 // unsure = true 表示刪掉了一段不在地名清單裡、靠位置推測是城市的文字，需人工確認
@@ -1368,9 +1366,8 @@ function buildAuthorAffiliation(a) {
     if (looksLikeCitation(u)) { unsure = true; continue; }
     const r = cleanAffiliationUnit(u);
     if (r.unsure) unsure = true;
-    if (!r.text) continue;
-    if (!/[,，]/.test(r.text) && _UNIV_ONLY_RE.test(r.text) && !/department|dept\b|school of|institute|center|centre|系|所|中心/i.test(r.text)) continue;
-    units.push(r.text);
+    // 只有學校名稱的單位（例：「National Chengchi University」）也照文稿保留，不捨棄
+    if (r.text) units.push(r.text);
   }
   return { text: units.join(AFFIL_SEP), unsure };
 }
@@ -1449,6 +1446,10 @@ function buildAuthorsFromSource(list) {
   });
 }
 
+// 只在輸入確實有結構化作者時附加：作者由程式產生，請模型不要輸出作者（省時間）。
+// 不放進主 prompt：實測 gpt-5.4-nano 會把這條規則誤用在文字輸入上，整份作者名單留空。
+const AUTHORS_FROM_CODE_NOTE = '\n\n【本次輸入】輸入 JSON 含 "author" 陣列，作者名單由程式產生：auth_cnt 填 0、authors 填空陣列 []。';
+
 // OpenAI 呼叫（純文字模式與 DOI 確認後共用）
 async function callOpenAI(text) {
   const apiKey = await getAiApiKey();
@@ -1468,7 +1469,7 @@ async function callOpenAI(text) {
   const payload = {
     model: CONFIG.ai.model,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: sourceAuthors(text) ? SYSTEM_PROMPT + AUTHORS_FROM_CODE_NOTE : SYSTEM_PROMPT },
       { role: 'user',   content: text }
     ]
   };
@@ -1537,13 +1538,17 @@ async function callOpenAI(text) {
     if (_confSrc?._is_conference) parsed._publ_tpe_src = _confSrc._is_conference;
     if (parsed.publ_tpe === '04' && _confSrc) applySourceConferenceFields(parsed, _confSrc);
     // field_cod 沒有唯一正解（AI 判斷），一律標記需人工確認，並附上 OpenAlex 學科供秘書參考
+    // 升等論著：書目資料無從判斷（由老師決定哪些著作送升等）。
+    // 程式一律預設「0 非升等論著」，並標記需人工確認，避免老師以為已判斷過
+    parsed.promote = '0';
+    parsed._promote_confirm = true;
     if (parsed.field_cod) {
       parsed._field_confirm = true;
       parsed._field_name = FIELD_COD_NAMES[parsed.field_cod] || '';
       parsed._field_ref  = text.match(/"research-field":\s*"([^"]+)"/)?.[1]
                         || text.match(/^research-field:\s*(.+)$/m)?.[1]?.trim() || '';
     }
-    // sta_ut_nam 後處理：去除大學名稱前綴，並將政大英文系所名翻成中文縮寫
+    // sta_ut_nam 後處理：整理空白；政大英文系所名轉中文縮寫（CONFIG.affiliation.nccuDeptAbbrev，預設關閉）
     const _NCCU_DEPT_MAP = [
       [/Mathematical\s+Sciences|Applied\s+Mathematics/i,                  '應數系'],
       [/Statistics/i,                                                       '統計系'],
@@ -1601,18 +1606,13 @@ async function callOpenAI(text) {
             a.sta_ut_nam.trim() === a.sta_chi.trim()) {
           a.sta_ut_nam = '';
         }
-        // 去除開頭的大學/學院名稱（中文或英文），保留次級單位。
-        // 多個單位以「; 」串接時逐一處理，並保持原順序。
+        // 多個單位以「; 」串接時逐一整理空白，保持原順序。
+        // 開頭的學校名稱照文稿保留（如 IEEE 的 "National Chengchi University, Department of …"、
+        // 「國立政治大學資訊科學系」），不刪除——老師要求作者單位與文稿一致。
         if (a.sta_ut_nam) {
           a.sta_ut_nam = a.sta_ut_nam
             .split(/\s*[;；]\s*/)
-            .map(s => s
-              .replace(/^[一-鿿]{2,}(?:大學|學院|大學院)[,，\s]*/u, '')
-              // 只刪「整段是大學／學院名稱＋逗號」的開頭（如 IEEE 的 "National Chengchi University,Department of …"）。
-              // 不可只看結尾字：Graduate Institute of …、School of … 是系所層級；
-              // "Taipei Medical University Hospital" 不接逗號，是醫院全名，都不能刪。
-              .replace(/^(?!(?:Graduate|Research)\b)[\w\s\-'’.&]{3,}?\b(?:University|College|Institute of Technology)\s*[,，]\s*(?=\S)/i, '')
-              .trim())
+            .map(s => s.replace(/\s*,\s*/g, ', ').trim())
             .filter(Boolean)
             .join(AFFIL_SEP);
         }
@@ -1825,66 +1825,80 @@ async function fetchDataCite(doi) {
   } catch { return null; }
 }
 
+// DataCite → 與 CrossRef 路徑相同形狀的 JSON（author 陣列、date-parts、container-title…）
+// 改成 JSON 後，作者名單、會議欄位、語言等都能由程式依來源產生，不必讓 LLM 從文字裡讀。
+// 實測（Zenodo 會議簡報）：文字格式下 gpt-5.4-mini 多數姓名未轉成「名 姓」、完整日期與作者單位也沒送進去。
 function formatDataCiteData(attr, doi, openAlex = null, s2 = null, meeting = null) {
-  const lines = [];
-  const title = attr.titles?.[0]?.title || '';
-  if (title) lines.push(`標題：${title}`);
-
-  const creators = attr.creators || [];
-  if (creators.length) {
-    const authors = creators.map((c, i) => {
-      const name  = c.name || [c.givenName, c.familyName].filter(Boolean).join(' ');
-      // 以文稿原文單位為準（DataCite affiliation / OpenAlex raw_affiliation_strings），
-      // 不使用 OpenAlex 正規化後的機構名稱
-      const affil = joinManuscriptAffiliations(manuscriptAffiliations(
-        { affiliation: c.affiliation || [] },
-        openAlex?.authorships?.[i]
-      ));
-      return affil ? `${name}（${affil}）` : name;
-    });
-    lines.push(`作者：${authors.join('；')}`);
-    lines.push(`作者人數：${creators.length}`);
-  }
-
-  const journal = attr.container?.title || '';
-  if (journal)                lines.push(`期刊：${journal}`);
-  if (attr.publicationYear)   lines.push(`出版年：${attr.publicationYear}`);
-  if (attr.container?.volume) lines.push(`卷：${attr.container.volume}`);
-  if (attr.container?.issue)  lines.push(`期：${attr.container.issue}`);
-  const sp = attr.container?.firstPage, ep = attr.container?.lastPage;
-  const pagesTxt = normalizePages(sp && ep ? `${sp}-${ep}` : (sp || ep || ''));
-  if (pagesTxt) lines.push(`頁碼：${pagesTxt}`);
-  if (attr.language)  lines.push(`語言：${attr.language}`);
-  if (attr.publisher) lines.push(`出版商：${attr.publisher}`);
-
-  const abstractText = attr.descriptions?.find(d => d.descriptionType === 'Abstract')?.description
-    || s2?.abstract || '';
-  if (abstractText) lines.push(`摘要：${abstractText}`);
-
-  const keywords = attr.subjects?.map(s => s.subject).filter(Boolean) || [];
-  if (keywords.length) lines.push(`關鍵字：${keywords.slice(0, 5).join('；')}`);
-  if (openAlex?.primary_topic?.display_name) lines.push(`研究主題：${openAlex.primary_topic.display_name}`);
-  if (openAlexResearchField(openAlex)) lines.push(`research-field: ${openAlexResearchField(openAlex)}`);
-
-  const type = attr.types?.resourceTypeGeneral || attr.types?.resourceType || '';
-  // 會議論文判斷：DataCite 類型、Zenodo meeting、OpenAlex type 任一指出是會議 → 類型改寫為 conference-paper
+  const d = {};
+  const resType = attr.types?.resourceTypeGeneral || attr.types?.resourceType || '';
+  // 會議論文判斷：DataCite 類型、Zenodo meeting、OpenAlex type 任一指出是會議
   const confBy = /^conference(paper|proceeding)$/i.test(attr.types?.resourceTypeGeneral || '') ? 'datacite-type'
                : meeting ? 'zenodo-meeting'
                : openAlex?.type === 'conference-paper' ? 'openalex-type' : '';
-  if (confBy) {
-    lines.push(`類型：conference-paper（DataCite 原類型：${type || '未提供'}）`);
-    lines.push(`_is_conference: ${confBy}`);
-  } else if (type) {
-    lines.push(`類型：${type}`);
+  d.type = confBy ? 'conference-paper' : (attr.types?.citeproc || resType || '');
+  if (resType) d['datacite-type'] = resType;
+
+  const title = attr.titles?.[0]?.title || '';
+  if (title) d.title = [title];
+  const sub = attr.titles?.find(t => t.titleType === 'Subtitle')?.title;
+  if (sub) d.subtitle = [sub];
+
+  // 作者：DataCite 的 affiliation 可能是字串陣列或 {name} 物件陣列，統一成 {name}
+  const creators = (attr.creators || []).filter(c => c.nameType !== 'Organizational' || c.name);
+  if (creators.length) {
+    d.author = creators.map((c, i) => {
+      const given  = (c.givenName  || '').trim();
+      const family = (c.familyName || '').trim();
+      const o = (given || family)
+        ? { given, family }
+        : { given: '', family: (c.name || '').trim() };
+      const affObjs = [].concat(c.affiliation || []).map(x => (typeof x === 'string' ? { name: x } : x));
+      const aff = joinManuscriptAffiliations(manuscriptAffiliations({ affiliation: affObjs }, openAlex?.authorships?.[i]));
+      if (aff) o.affiliation = aff;
+      return o;
+    });
   }
+
+  const c = attr.container || {};
+  if (c.title)  d['container-title'] = [c.title];
+  if (c.volume) d.volume = String(c.volume);
+  if (c.issue)  d.issue  = String(c.issue);
+  const sp = c.firstPage, ep = c.lastPage;
+  const pages = normalizePages(sp && ep ? `${sp}-${ep}` : (sp || ep || ''));
+  if (pages) d.page = pages;
+
+  // 日期：優先用 dates 裡的 Issued（完整年月日），否則只有 publicationYear
+  const issuedStr = (attr.dates || []).find(x => x.dateType === 'Issued')?.date || '';
+  const m = issuedStr.match(/^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?/);
+  if (m) d.issued = { 'date-parts': [[+m[1], ...(m[2] ? [+m[2]] : []), ...(m[3] ? [+m[3]] : [])]] };
+  else if (attr.publicationYear) d.issued = { 'date-parts': [[+attr.publicationYear]] };
+
+  if (attr.language)  d.language  = attr.language;
+  if (attr.publisher) d.publisher = typeof attr.publisher === 'string' ? attr.publisher : (attr.publisher.name || '');
+
+  const abstractText = attr.descriptions?.find(x => x.descriptionType === 'Abstract')?.description || s2?.abstract || '';
+  if (abstractText) d.abstract = abstractText.slice(0, 3000);
+  const keywords = attr.subjects?.map(x => x.subject).filter(Boolean) || [];
+  if (keywords.length) d.keywords = keywords.slice(0, 10);
+  if (openAlex?.primary_topic?.display_name) d['research-topic'] = openAlex.primary_topic.display_name;
+  if (openAlexResearchField(openAlex)) d['research-field'] = openAlexResearchField(openAlex);
+
+  // 作者所屬機構國碼（與 CrossRef 路徑相同，供 trsnat 判斷）
+  const countries = (openAlex?.authorships || [])
+    .flatMap(a => (a.institutions || []).map(inst => (inst.country_code || '').toUpperCase()))
+    .filter(Boolean);
+  if (countries.length) d['_author_countries'] = countries;
+
+  if (confBy) d['_is_conference'] = confBy;
   if (meeting) {
-    if (meeting.name)    lines.push(`_conf_nam: ${meeting.name}`);
-    if (meeting.dt)      lines.push(`_conf_dt: ${meeting.dt}`);
-    if (meeting.city)    lines.push(`_conf_city: ${meeting.city}`);
-    if (meeting.country) lines.push(`_conf_country: ${meeting.country}`);
+    if (meeting.name)    d['_conf_nam']     = meeting.name;
+    if (meeting.dt)      d['_conf_dt']      = meeting.dt;
+    if (meeting.city)    d['_conf_city']    = meeting.city;
+    if (meeting.country) d['_conf_country'] = meeting.country;
   }
-  lines.push(`DOI：${doi}`);
-  return lines.join('\n');
+  d.DOI = doi;
+  d.URL = `https://doi.org/${doi}`;
+  return JSON.stringify(d, null, 2);
 }
 
 

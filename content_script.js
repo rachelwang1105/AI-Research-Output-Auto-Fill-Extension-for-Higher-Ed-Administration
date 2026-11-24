@@ -80,6 +80,11 @@ function showCitelistBanner(text, lastBox) {
   anchor.insertAdjacentElement('beforeend', banner);
 }
 
+// 升等論著是預設值（非升等），不是判斷結果 → 標成橘色「需人工確認」
+function markPromoteManual(data) {
+  if (data._promote_confirm) highlightManual(document.querySelector('select[name="promote"]'));
+}
+
 function highlight(el) {
   el.style.backgroundColor = '#fffbcc';
   el.style.outline = '2px solid #f0c000';
@@ -109,6 +114,9 @@ function isSecondLayerPage() {
 
 // ── 第一層欄位 ───────────────────────────────────────────
 function fillFirstLayer(data) {
+  // 新的一篇開始填之前，先清掉上一篇留下的黃／橘色標示與收錄資料庫提示框，
+  // 否則上一篇標過、這一篇沒填的欄位會一直維持標示，看起來像這一篇的狀態
+  clearHighlight();
   _fillQuiet = false; // 第一層需要 change 事件（publ_tpe 等 UI 連動）
   setText  ('title1',       data.title1);
   setText  ('publ_dt',      data.publ_dt,        true);
@@ -121,6 +129,7 @@ function fillFirstLayer(data) {
   setText  ('publ_txt',     data.publ_txt,       true);
   setSelect('lang_cod',     data.lang_cod,       true);
   setSelect('promote',      data.promote);
+  markPromoteManual(data);
   setRadio ('chk_tag',      data.chk_tag,        true);
   setRadio ('sch_publ_tpe', data.sch_publ_tpe,   true);
   setText  ('sch_publ_rem', data.sch_publ_rem,   true);
@@ -137,6 +146,7 @@ function fillSecondLayerCommon(data) {
   setText  ('auth_cnt',     data.auth_cnt);
   setRadio ('trsnat',       data.trsnat);
   setSelect('promote',      data.promote);
+  markPromoteManual(data);
   setRadio ('chk_tag',      data.chk_tag);
   setRadio ('sch_publ_tpe', data.sch_publ_tpe);
   setRadio ('lib_flg',      data.lib_flg);

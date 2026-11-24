@@ -135,6 +135,7 @@ async function checkPendingData() {
     pendingFormattedText = pendingConfirm.formattedText;
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     pendingTabId = tabs[0]?.id || null;
+    resetSteps();
     setStep(1, 'done');
     showConfirm(pendingConfirm.meta);
     return;
@@ -1434,6 +1435,7 @@ btnProcess.addEventListener('click', async () => {
     textInput.value = '';
     chrome.storage.local.remove('savedInput');
     const preview = text.replace(/\s+/g, ' ').substring(0, 50) + (text.length > 50 ? '…' : '');
+    startNewItem();
     setStep(1, 'done');
     showConfirm({ title: preview, hasAbstract: /\bAbstract\s*:/i.test(text), authorCount: 0 });
     return;
@@ -1492,9 +1494,13 @@ btnProcess.addEventListener('click', async () => {
 
 
 // ── 確認後，呼叫 OpenAI 並填入 ───────────────────────────
+let aiInFlight = false;   // 防止連按「確認」送出兩次 AI 請求、兩份結果先後填入表單
 btnConfirm.addEventListener('click', async () => {
-  if (!pendingFormattedText) return;
+  if (!pendingFormattedText || aiInFlight) return;
+  aiInFlight = true;
+  btnConfirm.disabled = true;
   chrome.storage.local.remove('pendingConfirm');
+  setStep(1, 'done');
   setStep(2, 'active');
   showLoading('AI 欄位對應中…');
   // [耗時統計：暫時停用] const clickT0 = performance.now();   // 起點：按下「確認，AI 欄位對應並填入」
@@ -1502,9 +1508,10 @@ btnConfirm.addEventListener('click', async () => {
   chrome.runtime.sendMessage(
     { action: 'processWithAI', formattedText: pendingFormattedText },
     async (response) => {
-      if (!response.success) {
-        showError(response.error);
-        setStep(2, 'error');
+      aiInFlight = false;
+      btnConfirm.disabled = false;
+      if (chrome.runtime.lastError || !response?.success) {
+        showError(response?.error || chrome.runtime.lastError?.message || 'AI 處理失敗');
         return;
       }
       await dispatchFill(response.data, pendingTabId);
@@ -1666,6 +1673,16 @@ function showError(msg) {
   hide(sectionPreview);
   show(sectionError);
   errorMsg.textContent = msg;
+  // 進行中的步驟標成失敗（查詢失敗時第 1 步原本會一直停在「進行中」）
+  const active = document.querySelector('.step.active');
+  if (active) setStep(+active.id.replace('step', ''), 'error');
+}
+
+// 開始處理一篇新的論著：先清掉上一篇留下的步驟狀態，再把「擷取」設為進行中。
+// 佇列連續處理時，上一篇結束時是「✓ ✓ ✓ ④」，若不重設，下一篇會顯示成已完成清洗與填入。
+function startNewItem() {
+  resetSteps();
+  setStep(1, 'active');
 }
 
 
@@ -2030,6 +2047,7 @@ async function processNextFromQueue() {
 
   const [work, ...rest] = orcidQueue;
   await chrome.storage.local.set({ orcidQueue: rest });
+  startNewItem();
   tabDoi.click(); // 切回 DOI tab，離開佇列頁
   await renderPendingQueue();
   btnStartQueue.disabled = true; // 防止在確認/處理中途觸發下一篇
@@ -2414,8 +2432,8 @@ function showPreview(data, timingRec = null) {
     { key: '出版國', val: formatNatCod(data),                       cls: data._nat_cod_confirm ? 'warn' : 'code' },
     { key: '收錄',   val: formatCitelist(data),                     cls: data._citelist_confirm ? 'warn' : 'code' },
     { key: 'DOI',    val: data.doi,                                 cls: 'code' },
-    { key: '升等',   val: data.promote === '0' ? '非升等論著' : '⚠ 請確認',
-                     cls: data.promote === '0' ? '' : 'warn' },
+    { key: '升等',   val: data.promote === '0' ? '非升等論著（預設）・⚠ 若為升等論著請改選' : '⚠ 請確認',
+                     cls: 'warn' },
     // [耗時統計：暫時停用] { key: '耗時',   val: timingRec ? formatTimingRow(timingRec) : '', cls: 'code' },
   ];
 
