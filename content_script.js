@@ -98,6 +98,17 @@ function highlightManual(el) {
   el.dataset.aiHighlighted = 'true';
 }
 
+// 清空「國內／國外」與「出版國」：取消所有勾選；下拉選單有空白選項就選它，沒有就不選任何項
+// 不觸發 change 事件，避免頁面上的連動腳本又把預設值帶回來
+function clearNatFields() {
+  document.querySelectorAll('input[type="radio"][name="nat_tpe"]').forEach(el => { el.checked = false; });
+  const sel = document.querySelector('select[name="nat_cod"]');
+  if (!sel) return;
+  const blank = [...sel.options].find(o => !o.value.trim());
+  if (blank) sel.value = blank.value;
+  else sel.selectedIndex = -1;
+}
+
 function highlightManualByName(name) {
   highlightManual(document.querySelector(`[name="${name}"]`));
 }
@@ -238,6 +249,9 @@ function fillSecondLayerJournal(data) {
   markCitelistManual(data);
   // 出版國查不到時刻意留空（不預設 TWN），標為橘色虛線提示人工選擇；
   // 若值是從出版商名稱推導而來（_nat_cod_confirm），仍填入但同樣標橘色虛線要求複核
+  // 查不到時要主動清掉表單原本的預設值（例如預設勾「國內」、選 TWN），
+  // 否則畫面看起來像程式把國外期刊判成國內
+  if (!data.nat_cod) clearNatFields();
   setRadio     ('nat_tpe',     data.nat_tpe);
   setSelect    ('nat_cod',     data.nat_cod);
   if (data._nat_cod_confirm) {

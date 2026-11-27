@@ -1061,9 +1061,21 @@ async function fetchMetadataOnly(doi) {
         const year        = dcAttr.publicationYear ? String(dcAttr.publicationYear) : '';
         const authorCount = dcAttr.creators?.length   || 0;
         const hasAbstract = !!(dcAttr.descriptions?.some(d => d.descriptionType === 'Abstract') || s2Data?.abstract);
-        const meeting     = await fetchZenodoMeeting(cleanDoi);   // Zenodo 的會議資訊（DataCite 沒有轉錄）
+        // 期刊出版國：ISSN 取自 DataCite container / relatedIdentifiers，再補 OpenAlex 的期刊 ISSN
+        const dcIssns = [
+          dcAttr.container?.identifierType === 'ISSN' ? dcAttr.container.identifier : null,
+          ...(dcAttr.relatedIdentifiers || []).filter(r => r.relatedIdentifierType === 'ISSN').map(r => r.relatedIdentifier),
+          ...[].concat(openAlexData?.primary_location?.source?.issn || []),
+        ];
+        const [meeting, country] = await Promise.all([
+          fetchZenodoMeeting(cleanDoi),   // Zenodo 的會議資訊（DataCite 沒有轉錄）
+          lookupJournalCountry({
+            issns: dcIssns, journalName: journal,
+            publisher: typeof dcAttr.publisher === 'string' ? dcAttr.publisher : dcAttr.publisher?.name || '',
+          }),
+        ]);
         return { title, journal, year, authorCount, hasAbstract,
-          formattedText: formatDataCiteData(dcAttr, cleanDoi, openAlexData, s2Data, meeting) };
+          formattedText: formatDataCiteData(dcAttr, cleanDoi, openAlexData, s2Data, meeting, journalCountryFields(country)) };
       }
          // 第三備援：doi.org 內容協商（Airiti/台灣期刊等）
       const cslData = await fetchDoiCsl(cleanDoi);
@@ -1090,9 +1102,12 @@ async function fetchMetadataOnly(doi) {
           if (fp && lp) d.page = `${fp}-${lp}`;
           else if (fp)  d.page = fp;
         }
-        // HTML 頁面補強（CSL JSON 欄位不完整時，追抓出版社頁面 meta tag）
-        if (!year || !d.volume || !d.page || !d.abstract) {
-          const htmlMeta = await fetchDoiHtmlMeta(cleanDoi);
+        // HTML 頁面補強（CSL JSON 欄位不完整、或作者都沒有單位時，追抓出版社頁面 meta tag）
+        // 實例：10.23055/ijietap.2026.33.5.11803（韓國 KISTI 註冊）CSL 只有姓名，單位只在期刊網頁上
+        const cslHasAff = (cslData.author || []).some(a => [].concat(a.affiliation || []).length);
+        let htmlMeta = null;
+        if (!year || !d.volume || !d.page || !d.abstract || !cslHasAff) {
+          htmlMeta = await fetchDoiHtmlMeta(cleanDoi);
           if (htmlMeta) {
             // 日期：HTML 通常有完整年月日，優先更新 issued
             const hDp = htmlMeta.issued?.['date-parts']?.[0];
@@ -1123,6 +1138,19 @@ async function fetchMetadataOnly(doi) {
           }))
           .filter(a => a.family);
         const authorCount = authorObjs.length;
+
+        // 作者單位：取出版社網頁的 citation_author_institution。先依姓名對應；
+        // 對不到而兩邊人數相同時，才依順序對應。之後由 buildAuthorsFromSource 去掉城市、國家
+        const instList = htmlMeta?._author_institutions || cslData._author_institutions || [];
+        if (instList.length) {
+          const nameKey = s => String(s || '').toLowerCase().replace(/[^\p{L}]+/gu, ' ')
+            .trim().split(' ').sort().join(' ');
+          authorObjs.forEach((a, i) => {
+            const hit = instList.find(x => nameKey(x.name) === nameKey(`${a.given} ${a.family}`))
+                     || (instList.length === authorObjs.length ? instList[i] : null);
+            if (hit?.affs.length) a.affiliation = hit.affs.join('; ');
+          });
+        }
 
         // ORCID 系所：用 DOI 搜尋，比對姓名後掛上 orcid-dept / orcid-org
         const orcidDepts = authorObjs.length
@@ -1183,6 +1211,14 @@ async function fetchMetadataOnly(doi) {
         // WoS 子資料庫（SCIE/SSCI/AHCI）不從主題領域推導，只標記需人工確認
         if (indexedIn.includes('web_of_science')) d['_wos'] = true;
         if (knownDbs.size) d['_known_dbs'] = [...knownDbs];
+
+        // 期刊出版國（Airiti 常無 ISSN，resolveJournalCountry 會再以期刊全名比對台灣期刊清單）
+        Object.assign(d, journalCountryFields(await lookupJournalCountry({
+          issns: [...issns, ...[].concat(openAlexData?.primary_location?.source?.issn || [])],
+          journalName: journal,
+          publisherLocation: cslData['publisher-place'] || '',
+          publisher:   cslData.publisher || d.publisher || '',
+        })));
 
         return { title, journal, year, authorCount,
           hasAbstract: !!abstractText, formattedText: JSON.stringify(d, null, 2) };
@@ -1347,7 +1383,7 @@ function cleanAffiliationUnit(unit) {
   return { text: parts.join(', '), unsure };
 }
 
-// 作者的 sta_ut_nam：多個單位以「; 」分隔，逐一清理；只有大學名稱的單位捨棄
+// 作者的 sta_ut_nam：多個單位以「; 」分隔，逐一清理；只有大學名稱的單位也照文稿保留
 // 看起來像參考文獻而不是單位：有年份，且有卷／期／頁等書目記號或書名號。
 // 實例：月旦某篇的 CrossRef affiliation 放的是「論法制上權利主體之建構基礎與變化…，法令月刊，2016年3月，67卷3期」
 function looksLikeCitation(s) {
@@ -1828,7 +1864,7 @@ async function fetchDataCite(doi) {
 // DataCite → 與 CrossRef 路徑相同形狀的 JSON（author 陣列、date-parts、container-title…）
 // 改成 JSON 後，作者名單、會議欄位、語言等都能由程式依來源產生，不必讓 LLM 從文字裡讀。
 // 實測（Zenodo 會議簡報）：文字格式下 gpt-5.4-mini 多數姓名未轉成「名 姓」、完整日期與作者單位也沒送進去。
-function formatDataCiteData(attr, doi, openAlex = null, s2 = null, meeting = null) {
+function formatDataCiteData(attr, doi, openAlex = null, s2 = null, meeting = null, countryFields = {}) {
   const d = {};
   const resType = attr.types?.resourceTypeGeneral || attr.types?.resourceType || '';
   // 會議論文判斷：DataCite 類型、Zenodo meeting、OpenAlex type 任一指出是會議
@@ -1896,6 +1932,7 @@ function formatDataCiteData(attr, doi, openAlex = null, s2 = null, meeting = nul
     if (meeting.city)    d['_conf_city']    = meeting.city;
     if (meeting.country) d['_conf_country'] = meeting.country;
   }
+  Object.assign(d, countryFields);
   d.DOI = doi;
   d.URL = `https://doi.org/${doi}`;
   return JSON.stringify(d, null, 2);
@@ -2052,6 +2089,8 @@ async function getTaiwanJournals() {
 // ── 純文字輸入前處理：補查 TSSCI/THCI/Scopus/WoS 並附加 _known_dbs ──
 // 在文字模式（使用者貼上 BibTeX / RIS / 純文字引用）送 AI 前呼叫
 async function enrichPublicationText(rawText) {
+  // PDF 路徑會先呼叫一次（enrichText），送 AI 前又會再呼叫；已補過就不重查
+  if (/^_(?:known_dbs|wos|journal_country):/m.test(rawText)) return rawText;
   const knownDbs   = new Set();
   let   wos        = false;
 
@@ -2096,11 +2135,20 @@ async function enrichPublicationText(rawText) {
   if (/\bieee\b/.test(pubLower))                                     knownDbs.add('k');
   if (/\bacm\b|association for computing machinery/.test(pubLower))  knownDbs.add('i');
 
-  if (knownDbs.size === 0 && !wos) return rawText;  // 無任何附加資訊，原文回傳
+  // ── 6. 期刊出版國（與 DOI 路徑相同的判斷；查不到就不給，表單留空由使用者選）
+  //       文字裡可能有多個 ISSN（印刷版／電子版），全部交給 OpenAlex 依序查
+  const allIssns = rawText.match(/\b\d{4}-\d{3}[\dX]\b/gi) || [];
+  const country  = await lookupJournalCountry({
+    issns: allIssns, journalName: journalName || '', publisher: pubMatch?.[1]?.trim() || '',
+  });
+  const cf = journalCountryFields(country);
+
+  if (knownDbs.size === 0 && !wos && !country) return rawText;  // 無任何附加資訊，原文回傳
 
   const annotation = [
     knownDbs.size ? `\n_known_dbs: [${[...knownDbs].map(d => JSON.stringify(d)).join(', ')}]` : '',
     wos           ? `\n_wos: true`                                                             : '',
+    ...Object.entries(cf).map(([k, v]) => `\n${k}: ${v}`),
   ].join('');
 
   return rawText + annotation;
@@ -2546,6 +2594,97 @@ const CITY_TO_ISO3 = {
   'toronto': 'CAN', 'montreal': 'CAN', 'ottawa': 'CAN', 'melbourne': 'AUS', 'sydney': 'AUS',
 };
 
+// ── 期刊出版國（所有輸入路徑共用）─────────────────────────
+const ISO2_TO_ISO3 = {
+  AF:'AFG',AL:'ALB',DZ:'DZA',AD:'AND',AO:'AGO',AR:'ARG',AM:'ARM',AU:'AUS',AT:'AUT',
+  AZ:'AZE',BH:'BHR',BD:'BGD',BY:'BLR',BE:'BEL',BZ:'BLZ',BJ:'BEN',BT:'BTN',BO:'BOL',
+  BA:'BIH',BW:'BWA',BR:'BRA',BN:'BRN',BG:'BGR',BF:'BFA',BI:'BDI',KH:'KHM',CM:'CMR',
+  CA:'CAN',CV:'CPV',CF:'CAF',TD:'TCD',CL:'CHL',CN:'CHN',CO:'COL',CG:'COG',CR:'CRI',
+  HR:'HRV',CU:'CUB',CY:'CYP',CZ:'CZE',DK:'DNK',DJ:'DJI',DO:'DOM',EC:'ECU',EG:'EGY',
+  SV:'SLV',EE:'EST',ET:'ETH',FJ:'FJI',FI:'FIN',FR:'FRA',GA:'GAB',GE:'GEO',DE:'DEU',
+  GH:'GHA',GR:'GRC',GT:'GTM',GN:'GIN',GY:'GUY',HT:'HTI',HN:'HND',HK:'HKG',HU:'HUN',
+  IS:'ISL',IN:'IND',ID:'IDN',IR:'IRN',IQ:'IRQ',IE:'IRL',IL:'ISR',IT:'ITA',JM:'JAM',
+  JP:'JPN',JO:'JOR',KZ:'KAZ',KE:'KEN',KP:'PRK',KR:'KOR',KW:'KWT',KG:'KGZ',LA:'LAO',
+  LV:'LVA',LB:'LBN',LY:'LBY',LI:'LIE',LT:'LTU',LU:'LUX',MK:'MKD',MG:'MDG',MY:'MYS',
+  MV:'MDV',ML:'MLI',MT:'MLT',MR:'MRT',MX:'MEX',MD:'MDA',MC:'MCO',MN:'MNG',ME:'MNE',
+  MA:'MAR',MZ:'MOZ',MM:'MMR',NA:'NAM',NP:'NPL',NL:'NLD',NZ:'NZL',NI:'NIC',NG:'NGA',
+  NO:'NOR',OM:'OMN',PK:'PAK',PA:'PAN',PG:'PNG',PY:'PRY',PE:'PER',PH:'PHL',PL:'POL',
+  PT:'PRT',QA:'QAT',RO:'ROU',RU:'RUS',RW:'RWA',SA:'SAU',SN:'SEN',RS:'SRB',SL:'SLE',
+  SG:'SGP',SK:'SVK',SI:'SVN',SO:'SOM',ZA:'ZAF',SS:'SSD',ES:'ESP',LK:'LKA',SD:'SDN',
+  SR:'SUR',SZ:'SWZ',SE:'SWE',CH:'CHE',SY:'SYR',TW:'TWN',TJ:'TJK',TZ:'TZA',TH:'THA',
+  TL:'TLS',TG:'TGO',TT:'TTO',TN:'TUN',TR:'TUR',TM:'TKM',UG:'UGA',UA:'UKR',AE:'ARE',
+  GB:'GBR',US:'USA',UY:'URY',UZ:'UZB',VE:'VEN',VN:'VNM',YE:'YEM',ZM:'ZMB',ZW:'ZWE',
+  MO:'MAC',PR:'PRI',CD:'COD',CI:'CIV',BS:'BHS',BB:'BRB',GL:'GRL',PS:'PSE',MU:'MUS',
+  VA:'VAT',AG:'ATG',GM:'GMB',NE:'NER',SC:'SYC',
+};
+
+// ISSN 統一成 XXXX-XXXX（OpenAlex filter 需要破折號；taiwan_journals.json 的 key 不含破折號）
+function normalizeIssns(issns = []) {
+  return [...new Set([].concat(issns).flat().filter(Boolean)
+    .map(x => String(x).toUpperCase().replace(/[^0-9X]/g, ''))
+    .filter(x => /^\d{7}[\dX]$/.test(x))
+    .map(x => `${x.slice(0, 4)}-${x.slice(4)}`))];
+}
+
+// 判斷順序（全部為確定性來源，查不到就回傳 null，絕不預設 TWN）：
+//   ①  OpenAlex /sources 的 country_code（期刊 ISSN 登記國，書目學上的出版國，最權威）
+//   ①b country_code 為 null 時，從 societies（期刊背後的學會）推導
+//       這是掛外國發行商的台灣學會期刊唯一抓得到的線索（例：中國工程學刊由 T&F 發行）
+//   ②  ISSN 命中 taiwan_journals.json → 確定是台灣期刊；沒有 ISSN 時以期刊全名比對
+//   ③  publisher-location 的國名／城市
+//   ④  出版商名稱對照表（PUBLISHER_COUNTRY）→ 這層只是「出版商所在國」，
+//       與期刊出版國可能不同（例：中國期刊掛 Elsevier 發行），一律標記為需人工確認
+// 注意：OpenAlex work 內嵌的 primary_location.source 是精簡物件、不含 country_code，
+//      oaSource 必須另打 /sources 端點取得（fetchOpenAlexSourceCountry），不可改回讀 primary_location。
+function resolveJournalCountry({ oaSource = null, issns = [], journalName = '', publisherLocation = '',
+                                 publisher = '', taiwanJournals = {} } = {}) {
+  const cc3 = ISO2_TO_ISO3[(oaSource?.country_code || '').toUpperCase()];
+  if (cc3) return { cc3, src: 'openalex-issn-country', confident: true };
+
+  const soc = societyCountry(oaSource?.societies);
+  if (soc) return { cc3: soc.iso3, src: soc.confident ? 'openalex-society-name' : 'openalex-society-tld',
+                    confident: soc.confident };
+
+  if (normalizeIssns(issns).some(issn => taiwanJournals[issn.replace(/-/g, '')]))
+    return { cc3: 'TWN', src: 'taiwan-journal-issn', confident: true };
+  const jn = String(journalName || '').trim();
+  if (jn && _taiwanByName?.[jn])
+    return { cc3: 'TWN', src: 'taiwan-journal-name', confident: true };
+
+  const loc = String(publisherLocation || '').trim();
+  if (loc) {
+    const tail = loc.split(',').map(x => x.trim()).filter(Boolean).pop() || '';
+    const byName = COUNTRY_NAME_TO_ISO3[tail.toLowerCase()] || CITY_TO_ISO3[tail.toLowerCase()] || '';
+    if (byName) return { cc3: byName, src: 'publisher-location', confident: true };
+  }
+
+  const byPub = publisherCountry(publisher);
+  if (byPub) return { cc3: byPub, src: 'publisher-name', confident: false };
+
+  // ⑤ 出版商或期刊名是韓文 → 推定韓國（例：10.23055 KISTI 註冊的期刊，無 ISSN、名稱只有韓文）
+  //    只是由文字推測，一律標記為需人工確認
+  if (/[가-힯ᄀ-ᇿ㄰-㆏]/.test(`${publisher} ${journalName}`))
+    return { cc3: 'KOR', src: 'korean-script', confident: false };
+  return null;
+}
+
+// 轉成送 AI 的欄位；後處理（processWithAI）只認這三個欄位，AI 填的出版國一律丟棄
+function journalCountryFields(r) {
+  if (!r) return {};
+  return { _journal_country: r.cc3, _journal_country_src: r.src,
+           ...(r.confident ? {} : { _journal_country_confirm: true }) };
+}
+
+// 非 CrossRef 路徑用：自行查 OpenAlex /sources 與台灣期刊清單
+async function lookupJournalCountry({ issns = [], journalName = '', publisherLocation = '', publisher = '' } = {}) {
+  const list = normalizeIssns(issns);
+  const [taiwanJournals, oaSource] = await Promise.all([
+    getTaiwanJournals(),
+    list.length ? fetchOpenAlexSourceCountry(list) : Promise.resolve(null),
+  ]);
+  return resolveJournalCountry({ oaSource, issns: list, journalName, publisherLocation, publisher, taiwanJournals });
+}
+
 function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = null, inDblp = false, orcidDepts = {}, extraAbstract = '', taiwanJournals = {}, oaSource = null) {
   const d = {};
 
@@ -2646,76 +2785,15 @@ function formatCrossrefData(work, doi, openAlex = null, s2 = null, unpaywall = n
   const journalUrl = openAlex?.primary_location?.source?.homepage_url || '';
   if (journalUrl) d['_journal_url'] = journalUrl;
 
-  // 期刊出版國（OpenAlex source.country_code → ISO 3碼）
-  const _iso2to3 = {
-    AF:'AFG',AL:'ALB',DZ:'DZA',AD:'AND',AO:'AGO',AR:'ARG',AM:'ARM',AU:'AUS',AT:'AUT',
-    AZ:'AZE',BH:'BHR',BD:'BGD',BY:'BLR',BE:'BEL',BZ:'BLZ',BJ:'BEN',BT:'BTN',BO:'BOL',
-    BA:'BIH',BW:'BWA',BR:'BRA',BN:'BRN',BG:'BGR',BF:'BFA',BI:'BDI',KH:'KHM',CM:'CMR',
-    CA:'CAN',CV:'CPV',CF:'CAF',TD:'TCD',CL:'CHL',CN:'CHN',CO:'COL',CG:'COG',CR:'CRI',
-    HR:'HRV',CU:'CUB',CY:'CYP',CZ:'CZE',DK:'DNK',DJ:'DJI',DO:'DOM',EC:'ECU',EG:'EGY',
-    SV:'SLV',EE:'EST',ET:'ETH',FJ:'FJI',FI:'FIN',FR:'FRA',GA:'GAB',GE:'GEO',DE:'DEU',
-    GH:'GHA',GR:'GRC',GT:'GTM',GN:'GIN',GY:'GUY',HT:'HTI',HN:'HND',HK:'HKG',HU:'HUN',
-    IS:'ISL',IN:'IND',ID:'IDN',IR:'IRN',IQ:'IRQ',IE:'IRL',IL:'ISR',IT:'ITA',JM:'JAM',
-    JP:'JPN',JO:'JOR',KZ:'KAZ',KE:'KEN',KP:'PRK',KR:'KOR',KW:'KWT',KG:'KGZ',LA:'LAO',
-    LV:'LVA',LB:'LBN',LY:'LBY',LI:'LIE',LT:'LTU',LU:'LUX',MK:'MKD',MG:'MDG',MY:'MYS',
-    MV:'MDV',ML:'MLI',MT:'MLT',MR:'MRT',MX:'MEX',MD:'MDA',MC:'MCO',MN:'MNG',ME:'MNE',
-    MA:'MAR',MZ:'MOZ',MM:'MMR',NA:'NAM',NP:'NPL',NL:'NLD',NZ:'NZL',NI:'NIC',NG:'NGA',
-    NO:'NOR',OM:'OMN',PK:'PAK',PA:'PAN',PG:'PNG',PY:'PRY',PE:'PER',PH:'PHL',PL:'POL',
-    PT:'PRT',QA:'QAT',RO:'ROU',RU:'RUS',RW:'RWA',SA:'SAU',SN:'SEN',RS:'SRB',SL:'SLE',
-    SG:'SGP',SK:'SVK',SI:'SVN',SO:'SOM',ZA:'ZAF',SS:'SSD',ES:'ESP',LK:'LKA',SD:'SDN',
-    SR:'SUR',SZ:'SWZ',SE:'SWE',CH:'CHE',SY:'SYR',TW:'TWN',TJ:'TJK',TZ:'TZA',TH:'THA',
-    TL:'TLS',TG:'TGO',TT:'TTO',TN:'TUN',TR:'TUR',TM:'TKM',UG:'UGA',UA:'UKR',AE:'ARE',
-    GB:'GBR',US:'USA',UY:'URY',UZ:'UZB',VE:'VEN',VN:'VNM',YE:'YEM',ZM:'ZMB',ZW:'ZWE',
-    MO:'MAC',PR:'PRI',CD:'COD',CI:'CIV',BS:'BHS',BB:'BRB',GL:'GRL',PS:'PSE',MU:'MUS',
-    VA:'VAT',AG:'ATG',GM:'GMB',NE:'NER',SC:'SYC',
-  };
-  // 判斷順序（全部為確定性來源，查不到就不給值，絕不預設 TWN）：
-  //   ① OpenAlex /sources 的 country_code（期刊 ISSN 登記國，書目學上的出版國，最權威）
-  //   ② ISSN 命中 Airiti ACI（TSSCI/THCI）清單 → 確定是台灣期刊
-  //   ③ CrossRef publisher-location 的國名／城市
-  //   ④ 出版商名稱對照表（PUBLISHER_COUNTRY）→ 這層只是「出版商所在國」，
-  //      與期刊出版國可能不同（例：中國期刊掛 Elsevier 發行），一律標記為需人工確認
-  // 注意：work 內嵌的 primary_location.source 是精簡物件、不含 country_code，
-  //      只能靠 oaSource（另打 /sources 端點取得），不可改回讀 primary_location。
-  const _cc2 = (oaSource?.country_code || '').toUpperCase();
-  let _cc3 = _iso2to3[_cc2] || '';
-  let _ccSrc = _cc3 ? 'openalex-issn-country' : '';
-  let _ccConfident = !!_cc3;
-
-  // ①b OpenAlex country_code 為 null 時，從 societies（期刊背後的學會）推導。
-  //    這是掛外國發行商的台灣學會期刊唯一抓得到的線索（例：中國工程學刊由 T&F 發行）。
-  if (!_cc3) {
-    const soc = societyCountry(oaSource?.societies);
-    if (soc) {
-      _cc3 = soc.iso3;
-      _ccSrc = soc.confident ? 'openalex-society-name' : 'openalex-society-tld';
-      _ccConfident = soc.confident;
-    }
-  }
-
-  if (!_cc3) {
-    const hit = (work.ISSN || []).some(issn => taiwanJournals[issn.replace(/-/g, '')]);
-    if (hit) { _cc3 = 'TWN'; _ccSrc = 'taiwan-journal-issn'; _ccConfident = true; }
-  }
-  if (!_cc3) {
-    const loc = (work['publisher-location'] || '').trim();
-    if (loc) {
-      const tail = loc.split(',').map(s => s.trim()).filter(Boolean).pop() || '';
-      const byName = COUNTRY_NAME_TO_ISO3[tail.toLowerCase()] || CITY_TO_ISO3[tail.toLowerCase()] || '';
-      if (byName) { _cc3 = byName; _ccSrc = 'crossref-publisher-location'; _ccConfident = true; }
-    }
-  }
-  if (!_cc3) {
-    const byPub = publisherCountry(work.publisher);
-    // 出版商所在國 ≠ 期刊出版國（例：中國期刊掛 Elsevier 發行），一律要求人工複核
-    if (byPub) { _cc3 = byPub; _ccSrc = 'publisher-name'; _ccConfident = false; }
-  }
-
-  if (_cc3) {
-    d['_journal_country']     = _cc3;
-    d['_journal_country_src'] = _ccSrc;
-    if (!_ccConfident) d['_journal_country_confirm'] = true;
-  }
+  // 期刊出版國：判斷邏輯見 resolveJournalCountry（DataCite／doi.org／文字模式共用）
+  Object.assign(d, journalCountryFields(resolveJournalCountry({
+    oaSource,
+    issns:             work.ISSN || [],
+    journalName:       work['container-title']?.[0] || '',
+    publisherLocation: work['publisher-location'] || '',
+    publisher:         work.publisher || '',
+    taiwanJournals,
+  })));
 
   // ── 開放取用網址──────────────────────────────────────
   const oaUrl = unpaywall?.best_oa_location?.url_for_pdf
@@ -3094,7 +3172,26 @@ function parseHtmlMeta(html) {
     ? kwRaw.split(/[;；｜|]/).map(k => k.trim()).filter(k => k.length > 0 && k.length <= 50)
     : [];
 
+  // 作者與單位（Highwire 慣例：每個 citation_author 後面接該作者的 citation_author_institution，可多筆）
+  // 必須照 meta tag 出現順序逐一讀，才知道單位屬於哪位作者
+  const decodeEnt = s => s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+  const authorInst = [];
+  for (const tag of html.match(/<meta\b[^>]*>/gi) || []) {
+    const name = tag.match(/\b(?:name|property)\s*=\s*["']([^"']+)["']/i)?.[1]?.toLowerCase();
+    if (name !== 'citation_author' && name !== 'citation_author_institution') continue;
+    const cm = tag.match(/\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+    const content = decodeEnt((cm?.[1] ?? cm?.[2] ?? '').trim());
+    if (!content) continue;
+    if (name === 'citation_author') authorInst.push({ name: content, affs: [] });
+    else if (authorInst.length) authorInst[authorInst.length - 1].affs.push(content);
+  }
+
   const dp = {
+    ...(authorInst.some(a => a.affs.length) ? { _author_institutions: authorInst } : {}),
     title, 'container-title': [journal],
     issued: { 'date-parts': dateParts },
     author: authors.map(n => { const p = n.split(/[,，]/); return { family: p[0]?.trim(), given: p[1]?.trim() || '' }; }),

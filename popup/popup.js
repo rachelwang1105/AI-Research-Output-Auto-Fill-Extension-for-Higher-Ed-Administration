@@ -439,11 +439,36 @@ function detectDoiFromPage(tabId) {
             } else if (['作者','Authors','Author'].includes(cur) &&
                        el.classList.contains('metadataFieldValue')) {
               const links = [...el.querySelectorAll('a')].map(a => a.textContent.trim()).filter(Boolean);
-              return links.length ? links : [];
+              if (links.length) return links;
+              // 沒有連結時（AH 簡易檢視：「葉秉杰<br>Yeh, Pingchieh」）依 <br> 拆開；
+              // textContent 會把兩個名字黏成「葉秉杰Yeh, Pingchieh」。DOMParser 不執行腳本、不載入圖片。
+              return el.innerHTML.split(/<br\s*\/?>/i)
+                .map(s => new DOMParser().parseFromString(s, 'text/html').body.textContent.trim())
+                .filter(Boolean);
             }
           }
           return [];
         })();
+        // AH 常把同一位作者登記成中文名與英文名兩筆（例：「葉秉杰」「Yeh, Pingchieh」）。
+        // 中文名與英文名人數相同、且英文名的姓都是常見華人姓氏拼音時，視為同一批人，
+        // 只保留與題名同語系的那一組。姓氏檢查避免把「王小明＋John Smith」兩位不同作者誤併成一位。
+        const _ZH_SURNAMES = new Set(('chen chan chin lin lam lim huang hwang wong ng wang chang cheung zhang li lee '
+          + 'wu woo liu lau tsai choi cai yang yeung hsu xu hui hsieh xie tse cheng kuo guo kwok hung hong tseng zeng '
+          + 'chiu qiu yau liao lai chou zhou chow yeh ye yip su chuang zhuang lu lo luo law chiang jiang ho he kao gao '
+          + 'ko fang fong pan poon tu du to chung zhong fu shih shi sze yu yue sun ma tang hu wu chu zhu wei hsiao xiao '
+          + 'siu weng peng pang tsao cao tso chien jian tien tian tai dai teng deng tang fan yen yan kang kung gong lei '
+          + 'wen man shen sung song liang leung yao hou tsou zou tung dong chi ji yuan yuen lien lian mao ke lung long '
+          + 'chao zhao chiu tan tam qin jin kam han hon ou au pai bai pak tsui cui hsiung xiong kuan guan kwan ni mei '
+          + 'tao wan yin jen ren yam hsueh xue sit lung tsang zang cheong chua tay goh teo seah').split(' '));
+        const _latSurname = n => (n.includes(',') ? n.split(',')[0] : n.trim().split(/\s+/).pop() || '')
+          .trim().toLowerCase();
+        const _dedupBilingual = (names, title) => {
+          const cjk = names.filter(n => /[一-鿿]/.test(n));
+          const lat = names.filter(n => !/[一-鿿]/.test(n));
+          if (!cjk.length || cjk.length !== lat.length) return names;
+          if (!lat.every(n => _ZH_SURNAMES.has(_latSurname(n)))) return names;
+          return /[぀-ヿ一-鿿]/.test(title || '') ? cjk : lat;
+        };
         const dcDate     = getMeta('DC.date')             || getMeta('dc.date')
                         || getMeta('DC.date.issued')      || getMeta('dc.date.issued')
                         || getMeta('DC.date.created')     || getMeta('dc.date.created');
@@ -490,7 +515,7 @@ function detectDoiFromPage(tabId) {
         const dcDept     = getMeta('DC.contributor.department') || getMeta('dc.contributor.department')
                         || getMeta('DC.description.department') || getMeta('dc.description.department')
                         || _dcDescs.find(v => /[系所院組]/.test(v) && v.length < 30)
-                        || _getAhField(/^dc\.contributor(?!\.(author|creator|editor|department))/i) || '';
+                        || _getAhField(/^(?:dc\.contributor(?!\.(author|creator|editor|department))|貢獻者)/i) || '';
 
         // Open Graph
         const ogTitle  = getOg('og:title');
@@ -572,19 +597,21 @@ function detectDoiFromPage(tabId) {
               }
               return null;
             })();
-            const authors = _authorLinks || gvs('作者', 'Author', 'Authors');
+            const authors = _dedupBilingual(
+              _authorLinks || (_dsDomAuthors.length ? _dsDomAuthors : gvs('作者', 'Author', 'Authors')),
+              title);
             const dateRaw   = gv('日期', 'Date');
             const year      = dateRaw.match(/\d{4}/)?.[0] || '';
             const abstractRaw = gv('摘要', 'Abstract');
             const abstract  = _isAhBoilerplate(abstractRaw) ? '' : abstractRaw;
             const source    = gv('關聯', 'Relation', 'Source')
                            || _getAhField(/dc\.relation|關聯/i);
-            const dept      = _getAhField(/^dc\.contributor(?!\.(author|creator|editor|department))/i);
+            const dept      = _getAhField(/^(?:dc\.contributor(?!\.(author|creator|editor|department))|貢獻者)/i);
             const type      = gv('資料類型', 'Type') || h3TypeHint;
             const lang      = gv('語言', 'Language');
             const publisher = gv('出版者', 'Publisher');
             const kwsRaw  = gvs('關鍵詞', 'Keywords');
-            const TYPE_PAT_DOM = /^(book.?chapter|book\/chapter|bookpart|article|journal.?article|conference.?paper|thesis|dissertation|report|publications?)$/i;
+            const TYPE_PAT_DOM = /^(book.?chapter|book\/chapter|bookpart|article|journal.?article|conference(?:.?paper)?|thesis|dissertation|report|publications?)$/i;
             const keywords = kwsRaw.filter(k => !TYPE_PAT_DOM.test(k.trim()));
             const isbn      = gv('ISBN');
             const ids       = gvs('識別碼', 'Identifier');
@@ -615,7 +642,7 @@ function detectDoiFromPage(tabId) {
                 return { sta_chi: `${n.slice(c + 1).trim()} ${n.slice(0, c).trim()}`.trim() };
               }));
               lines.push(`_pre_authors_json: ${_paj}`);
-              const _dept = gv('系所', '系所單位', 'Department');
+              const _dept = gv('系所', '系所單位', 'Department') || dept;
               if (_dept) lines.push(`_pre_dept: ${_dept}`);
             }
             return { type: 'metadata', value: lines.join('\n'), title };
@@ -652,11 +679,11 @@ function detectDoiFromPage(tabId) {
         const _uniqA = rawAuthors.filter(n => { const k = n.toLowerCase(); return !_seenA.has(k) && _seenA.add(k); });
         // 去重 2：「名 姓」拉丁自然順序若已存在「姓, 名」形式則移除（保留 Last,First 形式）
         const _lastFirstSet = new Set(_uniqA.filter(n => n.includes(',')).map(n => n.toLowerCase()));
-        const finalAuthors = _uniqA.filter(n => {
+        const finalAuthors = _dedupBilingual(_uniqA.filter(n => {
           if (/[一-鿿]/.test(n) || n.includes(',')) return true;
           const p = n.trim().split(/\s+/);
           return p.length < 2 || !_lastFirstSet.has((p.slice(1).join(' ') + ', ' + p[0]).toLowerCase());
-        });
+        }), hwTitle || dcTitle || ldTitle || ogTitle || document.title || '');
         // DOM 日期補充：JSON-LD 常只有年份，DSpace DOM 有完整 yyyy-mm
         const domDateRaw = (() => {
           let cur = null;
@@ -703,7 +730,7 @@ function detectDoiFromPage(tabId) {
 
         // 過濾 dc.type 值混入 dc.subject 的情況
         // DSpace 有時把所有關鍵字塞進單一 citation_keywords（分號隔開），需先展開再過濾
-        const TYPE_PAT = /^(book.?chapter|book\/chapter|bookpart|article|journal.?article|conference.?paper|thesis|dissertation|report|publications?)$/i;
+        const TYPE_PAT = /^(book.?chapter|book\/chapter|bookpart|article|journal.?article|conference(?:.?paper)?|thesis|dissertation|report|publications?)$/i;
         const _rawKwFlat = hwKws.length === 1 && hwKws[0].includes(';')
           ? hwKws[0].split(/\s*;\s*/).filter(Boolean) : hwKws;
         const rawKws   = _rawKwFlat.length ? _rawKwFlat : dcSubj;
@@ -2410,8 +2437,10 @@ function formatNatCod(data) {
     'openalex-society-name':      '主辦學會所在國',
     'openalex-society-tld':       '⚠ 學會網域推導，請確認',
     'taiwan-journal-issn':        '台灣期刊清單',
-    'crossref-publisher-location':'出版地',
+    'taiwan-journal-name':        '台灣期刊清單（期刊名）',
+    'publisher-location':         '出版地',
     'publisher-name':             '⚠ 出版商名稱推導，請確認',
+    'korean-script':              '⚠ 韓文名稱推導，請確認',
   }[data._nat_cod_src] || (data._nat_cod_confirm ? '⚠ 請確認' : '');
   return `${data.nat_cod}（${tpe}）${note ? '・' + note : ''}`;
 }
